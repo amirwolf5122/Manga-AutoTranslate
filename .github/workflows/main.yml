@@ -106,7 +106,7 @@ jobs:
         with:
           name: translated-manga
           path: |
-            output_fa.*
-            output_pages/
+            output_fa.pdf
+            output_fa.zip
           retention-days: 7
           if-no-files-found: warn
