@@ -87,10 +87,6 @@ jobs:
           GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
         run: |
           OUTPUT="output_fa.${{ inputs.output_format }}"
-          if [ "${{ inputs.output_format }}" = "folder" ]; then
-            OUTPUT="output_pages"
-          fi
-
           echo "OUTPUT=$OUTPUT" >> $GITHUB_ENV
 
           python manga_translator.py \
