@@ -69,7 +69,7 @@ cd manga-translator-fa
 python -m venv .venv
 source .venv/bin/activate   # ویندوز: .venv\Scripts\activate
 
-pip install -r requirements.txt
+pip install -r requirements.txt --no-deps
 
 # فونت فارسی
 mkdir -p fonts
