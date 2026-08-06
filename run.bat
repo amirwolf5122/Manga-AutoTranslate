@@ -135,13 +135,11 @@ echo.
 echo فرمت خروجی:
 echo  1) pdf
 echo  2) zip
-echo  3) folder (پوشه تصاویر)
 set /p "out_choice=انتخاب [پیش‌فرض 1]: "
 if "!out_choice!"=="" set out_choice=1
 
 if "!out_choice!"=="1" set OUTPUT=output_pages_fa.pdf
 if "!out_choice!"=="2" set OUTPUT=output_pages_fa.zip
-if "!out_choice!"=="3" set OUTPUT=output_pages
 if not defined OUTPUT set OUTPUT=output_pages_fa.pdf
 echo خروجی: !OUTPUT!
 echo.
