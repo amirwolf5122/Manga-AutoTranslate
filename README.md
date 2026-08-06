@@ -68,22 +68,15 @@ git clone https://github.com/amirwolf5122/Manga-AutoTranslate.git
 cd Manga-AutoTranslate
 
 python -m venv .venv
-source .venv/bin/activate   # ویندوز: .venv\Scripts\activate
-
-pip install -r requirements.txt --no-deps
-
-# فونت فارسی
-mkdir -p fonts
-# Vazirmatn را از https://github.com/rastikerdar/vazirmatn دانلود کنید
+source .venv/bin/activate
+# ویندوز: .venv\Scripts\activate
 ```
 
 ```bash
-python manga_translator.py \
-  -i ./pages \
-  -o ./output_fa.pdf \
-  --font fonts/Vazirmatn-Bold.ttf \
-  --ocr-lang en \
-  --api-key "$GEMINI_API_KEY"
+#لینوکس مک:
+bash run.sh
+#ویندوز:
+start run.bat
 ```
 
 ---
