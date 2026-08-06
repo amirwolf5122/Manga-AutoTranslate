@@ -37,7 +37,6 @@ except ImportError:
           file=sys.stderr)
     raise
 
-# جایگزینی EasyOCR با PaddleOCR
 try:
     from paddleocr import PaddleOCR
 except ImportError:
@@ -62,7 +61,6 @@ class TextRegion:
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 PUNCTUATION_SET = set(string.punctuation + "؟«»٪٫،؛…")
-# واترمارک و متن‌های سایت که دیالوگ نیستن
 WATERMARK_PATTERNS = (
     "lunatoons", "lunatoon", "nadeinkorea", "made in korea", "madeinkorea",
     "asurascans", "asura", "flamecomics", "reaper scans", "reaperscans",
@@ -73,8 +71,6 @@ WATERMARK_PATTERNS = (
 class MangaTranslator:
     @staticmethod
     def _detect_gpu() -> bool:
-        """وقتی gpu صریحاً True/False داده نشده (یعنی None)، از طریق paddle
-        چک می‌کنیم GPU در دسترسه یا نه تا خودکار انتخاب بشه."""
         try:
             import paddle
             return paddle.is_compiled_with_cuda() and paddle.device.get_device() is not None
@@ -83,7 +79,7 @@ class MangaTranslator:
 
     def __init__(
         self,
-        gemini_api_key,  # str یا list[str] — چند کلید با failover خودکار
+        gemini_api_key,
         ocr_langs: List[str] = None,
         model_name: str = "gemini-flash-latest",
         font_path: Optional[str] = None,
@@ -104,9 +100,8 @@ class MangaTranslator:
         mag_ratio: float = 1.35,
         translation_temperature: float = 0.55,
         two_pass_ocr: bool = True,
-        max_output_width: Optional[int] = 900
+        max_output_width: Optional[int] = None
     ):
-        # پشتیبانی از یک یا چند API key (با کاما یا لیست)
         if isinstance(gemini_api_key, str):
             keys = [k.strip() for k in gemini_api_key.replace(";", ",").split(",") if k.strip()]
         else:
@@ -136,8 +131,6 @@ class MangaTranslator:
         self.two_pass_ocr = two_pass_ocr
         self.max_output_width = max_output_width
 
-        # گلوسری اسامی خاص که در طول کل اجرا (همه‌ی صفحات) حفظ می‌شه تا
-        # اسم شخصیت‌ها/مکان‌ها هر صفحه یه‌جور دیگه ترجمه نویسه‌گردانی نشن.
         self._name_glossary: Dict[str, str] = {}
 
         if not font_path or not os.path.isfile(font_path):
@@ -154,14 +147,12 @@ class MangaTranslator:
                 print("[*] GPU شناسایی نشد؛ OCR روی CPU اجرا می‌شه و کندتره. اگه توی Colab هستی "
                       "و GPU داری، از منوی Runtime > Change runtime type یه GPU (مثلاً T4) انتخاب کن.")
 
-        # مقداردهی PaddleOCR با پارامترهای سازگار با نسخه جدید
         self.ocr_langs = ocr_langs or ["en"]
         print(f"[*] در حال بارگذاری مدل PaddleOCR برای زبان(های) {self.ocr_langs} (gpu={gpu}) ...")
 
-        # تبدیل زبان‌ها به فرمت PaddleOCR
         lang_map = {
             "en": "en",
-            "fa": "fa",  # فارسی (نسخه‌های جدید PaddleOCR پشتیبانی می‌کنند)
+            "fa": "fa", 
             "ko": "korean",
             "ja": "japan",
             "zh": "ch",
@@ -174,17 +165,14 @@ class MangaTranslator:
             "ar": "arabic",
         }
 
-        # انتخاب زبان اصلی (اولین زبانی که پشتیبانی می‌شه)
         main_lang = "en"
         for lang in self.ocr_langs:
             if lang in lang_map:
                 main_lang = lang_map[lang]
                 break
 
-        # تنظیم دستگاه (GPU/CPU) برای نسخه جدید PaddleOCR
         device = "gpu" if gpu else "cpu"
 
-        # پارامترهای سازگار با نسخه جدید PaddleOCR
         self.ocr = PaddleOCR(
     use_textline_orientation=True,
     lang=main_lang,
@@ -193,12 +181,11 @@ class MangaTranslator:
     text_det_thresh=0.3,
     text_det_box_thresh=0.5,
     text_det_unclip_ratio=1.6,
-    # کاهش مصرف حافظه با تنظیمات کمتر
     det_db_thresh=0.3,
     det_db_box_thresh=0.5,
     det_db_unclip_ratio=1.6,
-    max_batch_size=1,  # کاهش تعداد پردازش همزمان
-    use_dilation=False,  # غیرفعال کردن دیلیشن
+    max_batch_size=1, 
+    use_dilation=False,
 )
         print(f"[*] مدل PaddleOCR با زبان '{main_lang}' و دستگاه '{device}' بارگذاری شد.")
 
@@ -209,7 +196,6 @@ class MangaTranslator:
             print(f"[*] مدل ترجمه: {self.model_name}")
 
     def _switch_to_next_key(self) -> bool:
-        """به کلید بعدی می‌ره. اگه کلیدی نموند False برمی‌گردونه."""
         self._key_index += 1
         if self._key_index >= len(self._api_keys):
             return False
@@ -218,13 +204,8 @@ class MangaTranslator:
         print(f"    [*] کلید API شماره {self._key_index + 1}/{len(self._api_keys)} فعال شد.")
         return True
 
-    # ------------------------------------------------------------------
-    # OCR
-    # ------------------------------------------------------------------
     @staticmethod
     def _clahe_enhance(image: np.ndarray) -> np.ndarray:
-        """کنتراست تصویر رو محلی بالا می‌بره تا متن‌های کم‌رنگ/افکتی/نورانی
-        که پاس عادی OCR ممکنه جاشون بندازه، بهتر دیده بشن."""
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
         clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
@@ -243,8 +224,6 @@ class MangaTranslator:
             text = line[1][0].strip()
             conf = line[1][1]
 
-            # محاسبه تقریبی زاویه از روی پلی‌گون
-            # (برای متن‌های تقریباً افقی یا عمودی کافیه)
             dx = poly[1][0] - poly[0][0]
             dy = poly[1][1] - poly[0][1]
             angle = float(np.degrees(np.arctan2(dy, dx)))
@@ -270,9 +249,6 @@ class MangaTranslator:
       return detections
     @staticmethod
     def _dedupe_detections(detections: List[dict], iou_thresh: float = 0.4) -> List[dict]:
-        """وقتی چند پاس OCR (مثلاً تصویر عادی + کنتراست‌بهبودیافته) رو
-        ترکیب می‌کنیم، ممکنه یه متن دوبار تشخیص داده بشه. این تابع
-        تشخیص‌های هم‌پوشان رو یکی می‌کنه (بهترین اعتماد رو نگه می‌داره)."""
         def rect_of(d):
             return cv2.boundingRect(d["poly"])
 
@@ -353,13 +329,11 @@ class MangaTranslator:
 
       regions: List[TextRegion] = []
       for gid, idxs in enumerate(groups.values()):
-        # ✅ بررسی اینکه idxs خالی نباشه
         if not idxs:
             continue
 
         boxes = []
         for i in idxs:
-            # ✅ بررسی اینکه i معتبر باشه
             if i >= len(detections):
                 continue
             poly = detections[i]["poly"].copy()
@@ -379,7 +353,6 @@ class MangaTranslator:
 
         x0, y0, x1, y1 = min(xs), min(ys), max(xe), max(ye)
 
-        # ✅ فقط اندیس‌های معتبر رو مرتب کن
         valid_idxs = [i for i in idxs if i < len(detections) and i < len(rects)]
         idxs_sorted = sorted(valid_idxs, key=lambda i: rects[i][1])
         text = " ".join(detections[i]["text"] for i in idxs_sorted if i < len(detections))
@@ -413,7 +386,6 @@ class MangaTranslator:
             return inter_area / float(union_area) if union_area > 0 else 0
 
         def containment(r1, r2):
-            """چقدر از r1 داخل r2 هست (۰ تا ۱)."""
             x1, y1, w1, h1 = r1
             x2, y2, w2, h2 = r2
             xi1, yi1 = max(x1, x2), max(y1, y2)
@@ -438,7 +410,6 @@ class MangaTranslator:
                 return True
             return False
 
-        # اول بزرگ‌ترها رو نگه دار
         ordered = sorted(regions, key=lambda r: r.rect[2] * r.rect[3], reverse=True)
         unique: List[TextRegion] = []
         for r in ordered:
@@ -447,7 +418,6 @@ class MangaTranslator:
                 iou = get_iou(r.rect, u.rect)
                 c1 = containment(r.rect, u.rect)
                 c2 = containment(u.rect, r.rect)
-                # متن شبیه فقط وقتی نزدیک هم باشن تکراری حساب می‌شه
                 near_same = centers_close(r.rect, u.rect) and text_similar(r.source_text, u.source_text)
                 if iou > overlap_thresh or c1 > 0.5 or c2 > 0.5 or near_same:
                     is_dup = True
@@ -466,16 +436,8 @@ class MangaTranslator:
                 unique.append(r)
         return unique
 
-    # ------------------------------------------------------------------
-    # پاک‌سازی متن قدیمی — پشت متن یکدست مثل خود حباب
-    # ------------------------------------------------------------------
     def clean_image(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
-        """
-        پاک‌سازی متن قدیمی.
-        - حباب سفید یکدست: پر کردن قوی + حذف شبح
-        - عنوان/لوگوی بزرگ روی هنر پیچیده: فقط inpaint (بدون سفید کردن کل ناحیه)
-        - پنل تیره/رنگی: آستانه تطبیقی + inpaint
-        """
+
         h_img, w_img = image.shape[:2]
         cleaned = image.copy()
         gray_full = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -512,7 +474,6 @@ class MangaTranslator:
             g = local_gray.astype(np.float32)
             region_view = cleaned[y0:y1, x0:x1].copy()
 
-            # نمونه‌برداری پس‌زمینه
             outer = cv2.dilate(local_orig, np.ones((11, 11), np.uint8), iterations=2)
             ring = cv2.subtract(
                 outer, cv2.dilate(local_orig, np.ones((3, 3), np.uint8), iterations=1)
@@ -546,16 +507,13 @@ class MangaTranslator:
             b, gc, r = float(bg_color[0]), float(bg_color[1]), float(bg_color[2])
             sat = max(b, gc, r) - min(b, gc, r)
 
-            # واریانس کل ناحیه محلی → تشخیص هنر پیچیده پشت عنوان
             area_std = float(np.std(g)) if g.size > 0 else 0.0
             src_len = max(1, len((region.source_text or "").strip()))
             area = max(1, rw * rh)
-            # عنوان بزرگ/لوگو: متن کوتاه ولی کادر بزرگ + پس‌زمینه پرنقش
             is_logo_title = (area / src_len > 2500 and area_std > 35) or (
                 rw > 200 and rh > 60 and src_len <= 16 and area_std > 40
             )
 
-            # حباب سفید فقط وقتی پس‌زمینه واقعاً یکدست روشن باشد
             is_white_bubble = (
                 bg_gray_val >= 200 and sat < 25 and bg_std < 25 and not is_logo_title
             )
@@ -571,13 +529,9 @@ class MangaTranslator:
             bg_u8 = np.clip(np.round(bg_color), 0, 255).astype(np.uint8)
 
             if is_logo_title:
-                # --- عنوان/لوگو روی هنر: فقط جوهر را inpaint کن، هنر را خراب نکن ---
-                # ماسک جوهر با کنتراست محلی
                 blur = cv2.GaussianBlur(local_gray, (5, 5), 0).astype(np.float32)
-                # حروف معمولاً از پس‌زمینه جدا هستند
                 diff = np.abs(g - blur)
                 ink = ((diff > 12) & (local_poly > 0)).astype(np.uint8) * 255
-                # یا کنتراست با bg
                 if bg_gray_val < 128:
                     ink2 = ((g > bg_gray_val + 20) & (local_poly > 0)).astype(np.uint8) * 255
                 else:
@@ -669,9 +623,6 @@ class MangaTranslator:
 
         return cleaned
 
-    # ------------------------------------------------------------------
-    # ترجمه
-    # ------------------------------------------------------------------
     @staticmethod
     def _is_daily_quota_error(err: Exception) -> bool:
         msg = str(err)
@@ -684,26 +635,25 @@ class MangaTranslator:
         payload = [{"id": r.id, "text": r.source_text} for r in regions]
 
         system_instruction = (
-    "تو مترجم مانهوا هستی. خروجی باید دقیقاً مثل حرف زدن واقعی باشه، "
-    "نه مثل کتاب یا دوبله.\n\n"
-    "مثال خوب:\n"
-    "• «این مأموریت اصلاً پیش نمی‌ره.» (نه: هیچ شانسی برای موفقیت نیست)\n"
-    "• «نمی‌دونم از پسشون برمیام یا نه.» (نه: معلوم نیست بتوانم پیروز شوم)\n"
-    "• «کاش حداقل یکی از سربازا زنده بود...»\n"
-    "• «اه...» / «چی‌کار کنیم؟» / «وقتی همه مردن، کلید رو چیجوری برداریم؟»\n\n"
-    "قبل از نهایی کردن هر خط بپرس:\n"
-    "1. تو گپ دوستانه همین‌جوری می‌گن؟\n"
-    "2. بوی کتاب/ترجمه می‌ده؟\n"
-    "3. می‌شه کوتاه‌تر و خودمونی‌ترش کرد؟\n"
-    "اگه یکی منفی بود از نو بنویس.\n\n"
-    "قوانین:\n"
-    "• فقط محاورهٔ امروزی. ممنوع: می‌باشد، خواهد بود، نمی‌تواند، جهت، می‌بایست.\n"
-    "• جمله‌ها کوتاه و شکسته.\n"
-    "• فحش و تندی رو کامل نگه دار.\n"
-    "• اسامی خاص (Moebius، Han Islat، Anyting، نام اسکیل) ترجمه نشن؛ "
-    "نویسه‌گردانی ثابت + فیلد names.\n"
-    "• متن UI کوتاه و واضح.\n• عنوان بازی/لوگوی بزرگ (مثل LAST، START GAME، نام سری) را معنی نکن؛ نویسه‌گردانی یا کوتاه نگه دار (LAST→لَست یا همان LAST، START GAME→شروع بازی فقط اگر دکمه باشد).\n"
-    "• فقط JSON معتبر. بدون توضیح اضافه."
+    "تو مترجم مانهوا هستی. باید دیالوگ‌ها رو جوری بنویسی که انگار دو نفر دارن "
+    "تو زندگی واقعی یا تو گیم با هم حرف می‌زنن — کاملاً امروزی، خودمونی و طبیعی.\n\n"
+
+    "قانون اصلی:\n"
+    "اگر جمله‌ات حس کتاب، دوبله قدیمی، ادبی یا ترجمه‌ی ماشینی بده، باید کامل عوضش کنی.\n\n"
+
+    "بعد از ترجمهٔ هر خط این سه سؤال رو از خودت بپرس:\n"
+    "1. یه آدم عادی امروزی اینجوری حرف می‌زنه؟\n"
+    "2. بوی کتاب یا ترجمه می‌ده؟\n"
+    "3. می‌تونم خودمونی‌تر، کوتاه‌تر و طبیعی‌ترش کنم؟\n"
+    "اگر جواب حتی یکی منفی بود، دوباره بنویس.\n\n"
+
+    "قوانین اجباری:\n"
+    "• فقط فارسی محاوره‌ای و امروزی بنویس. از کلمات و ساختارهای کتابی، ادبی یا رسمی پرهیز کن.\n"
+    "• جمله‌ها کوتاه، شکسته و طبیعی باشن.\n"
+    "• فحش و تندی متن اصلی رو کامل و بدون سانسور نگه دار.\n"
+    "• لکنت و تردید رو طبیعی بنویس (مـ... من...).\n"
+    "• اسامی خاص رو ترجمه نکن، فقط نویسه‌گردانی ثابت کن و توی فیلد names برگردون.\n"
+    "• خروجی فقط JSON معتبر باشه. هیچ توضیح اضافه‌ای ننویس."
 )
         user_prompt = (
     "این متن‌های استخراج‌شده از یک صفحه مانهوا هستن (ممکنه OCR ناقص باشه).\n"
@@ -765,7 +715,6 @@ class MangaTranslator:
                         if src and per:
                             self._name_glossary[src] = per
 
-                # اگه بعضی idها ترجمه نشدن، فقط همونا رو دوباره بفرست
                 missing = [r for r in regions if not r.translated_text]
                 if missing and attempt < self.max_retries:
                     print(f"    [!] {len(missing)} حباب بدون ترجمه؛ تلاش مجدد...")
@@ -775,7 +724,6 @@ class MangaTranslator:
                         "را اجرا کن و هر کدام را به فارسی محاوره‌ای طبیعی و وفادار به لحن شخصیت ترجمه کن:\n"
                         f"{json.dumps(payload2, ensure_ascii=False, indent=2)}"
                     )
-                    # حلقه attempt بعدی با payload کوچیک‌تر ادامه پیدا می‌کنه
                     regions = missing
                     continue
 
@@ -787,7 +735,6 @@ class MangaTranslator:
                 if self._is_daily_quota_error(e):
                     print(f"    [!] سهمیه‌ی کلید {self._key_index + 1}/{len(self._api_keys)} تموم شد.")
                     if self._switch_to_next_key():
-                        # با کلید جدید دوباره تلاش کن (بدون شمارش attempt)
                         continue
                     raise GeminiQuotaExhausted(
                         f"سهمیه‌ی همه‌ی {len(self._api_keys)} کلید Gemini برای مدل «{self.model_name}» تموم شده."
@@ -803,9 +750,6 @@ class MangaTranslator:
 
         print(f"    [!] ترجمه‌ی این بخش بعد از {self.max_retries} تلاش ناموفق موند.")
 
-    # ------------------------------------------------------------------
-    # رندر متن فارسی
-    # ------------------------------------------------------------------
     @staticmethod
     def _shape_farsi(text: str) -> str:
         reshaped = arabic_reshaper.reshape(text)
@@ -854,7 +798,6 @@ class MangaTranslator:
             return font, lines, sw, total_h, widest
 
         smallest_attempt = None
-        # از سایز بزرگ شروع کن تا متن داخل کادر جا بشه
         for size in range(52, 9, -1):
             font, lines, sw, total_h, widest = wrap_at(size)
             smallest_attempt = (font, lines, sw)
@@ -867,17 +810,11 @@ class MangaTranslator:
     def _pick_text_and_stroke(
         cleaned: np.ndarray, original: np.ndarray, region: TextRegion
     ) -> Tuple[Tuple[int, int, int], Tuple[int, int, int]]:
-        """
-        رنگ متن اصلی رو از جوهر حروف درمی‌آره.
-        اگه رنگی باشه (صورتی، طلایی، آبی و ...) همون رنگ برای فارسی استفاده می‌شه.
-        استروک هم بر اساس کنتراست با پس‌زمینه انتخاب می‌شه.
-        """
         h_img, w_img = original.shape[:2]
         x, y, w, h = region.rect
         x0, y0 = max(0, x), max(0, y)
         x1, y1 = min(w_img, x + w), min(h_img, y + h)
 
-        # ماسک پلی‌گون متن اصلی
         poly_mask = np.zeros((h_img, w_img), dtype=np.uint8)
         for poly in region.boxes:
             cv2.fillPoly(poly_mask, [poly], 255)
@@ -889,13 +826,11 @@ class MangaTranslator:
         if local_orig.size == 0:
             return (15, 15, 15), (255, 255, 255)
 
-        # روشنایی پس‌زمینه از تصویر تمیزشده
         if local_clean.size > 0:
             bg_gray = float(np.median(cv2.cvtColor(local_clean, cv2.COLOR_BGR2GRAY)))
         else:
             bg_gray = 128.0
 
-        # جوهر = پیکسل‌های داخل پلی‌گون که با پس‌زمینه فرق دارن
         orig_gray = cv2.cvtColor(local_orig, cv2.COLOR_BGR2GRAY).astype(np.float32)
         if bg_gray < 128:
             ink_m = (orig_gray > bg_gray + 20) & (local_mask > 0)
@@ -905,17 +840,14 @@ class MangaTranslator:
         ink_pixels = local_orig[ink_m]
 
         if len(ink_pixels) >= 8:
-            # میانه رنگ جوهر (مقاوم به نویز و استروک)
             bgr = np.median(ink_pixels, axis=0)
             r, g, b = int(bgr[2]), int(bgr[1]), int(bgr[0])
 
-            # اگه تقریباً خاکستری/سیاه/سفید بود، همون سیاه یا سفید استاندارد
             mx, mn = max(r, g, b), min(r, g, b)
             saturation = mx - mn
             lum = 0.299 * r + 0.587 * g + 0.114 * b
 
             if saturation < 25:
-                # متن بی‌رنگ
                 if bg_gray >= 140:
                     text_rgb = (18, 18, 18)
                     stroke_rgb = (255, 255, 255)
@@ -923,15 +855,12 @@ class MangaTranslator:
                     text_rgb = (245, 245, 245)
                     stroke_rgb = (10, 10, 10)
             else:
-                # متن رنگی — همون رنگ حفظ می‌شه
                 text_rgb = (r, g, b)
-                # استروک مخالف روشنایی متن برای خوانایی
                 if lum >= 140:
                     stroke_rgb = (20, 20, 20)
                 else:
                     stroke_rgb = (255, 255, 255)
         else:
-            # fallback بر اساس پس‌زمینه
             if bg_gray >= 140:
                 text_rgb, stroke_rgb = (18, 18, 18), (255, 255, 255)
             else:
@@ -957,7 +886,6 @@ class MangaTranslator:
 
         angle = getattr(region, "angle", 0.0)
 
-        # اگر زاویه خیلی کوچک بود (کمتر از ۸ درجه) چرخش نده
         if abs(angle) < 8:
             line_h = font.getbbox("آی", stroke_width=sw)[3] + 5
             total_h = line_h * len(lines)
@@ -977,7 +905,6 @@ class MangaTranslator:
                     stroke_fill=stroke_rgb,
                 )
         else:
-            # ---- حالت چرخیده ----
             line_h = font.getbbox("آی", stroke_width=sw)[3] + 6
             tmp_h = line_h * len(lines) + 30
             tmp_w = 0
@@ -1004,10 +931,7 @@ class MangaTranslator:
                     stroke_fill=stroke_rgb + (255,),
                 )
 
-            # چرخش (علامت منفی مهم است)
             rotated = tmp.rotate(-angle, expand=True, resample=Image.BICUBIC)
-
-            # قرار دادن در مرکز کادر اصلی
             cx = x + w // 2
             cy = y + h // 2
             rw, rh = rotated.size
@@ -1017,9 +941,6 @@ class MangaTranslator:
             pil_img.paste(rotated, (paste_x, paste_y), rotated)
 
       return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-    # ------------------------------------------------------------------
-    # پردازش
-    # ------------------------------------------------------------------
     def _process_chunk_worker(self, args_tuple) -> List[TextRegion]:
         idx, y0, y1, image = args_tuple
         print(f"    [>] OCR موازی تیکه‌ی {idx + 1} (ردیف {y0} تا {y1})")
@@ -1028,16 +949,12 @@ class MangaTranslator:
         detections = self.detect_text(piece)
 
         if self.two_pass_ocr:
-            # پاس دوم: کنتراست‌بهبودیافته
             enhanced = self._clahe_enhance(piece)
             detections += self.detect_text(enhanced)
-            # پاس سوم: تصویر معکوس
             inverted = cv2.bitwise_not(piece)
             detections += self.detect_text(inverted)
-            # پاس چهارم: باینری مخصوص متن سفید/افکتی روی مشکی
             gray = cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY)
             _, bw = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
-            # PaddleOCR متن تیره روی روشن رو بهتر می‌خونه
             if float(np.mean(bw)) < 127:
                 bw = cv2.bitwise_not(bw)
             bw = cv2.dilate(bw, np.ones((2, 2), np.uint8), iterations=1)
@@ -1123,8 +1040,6 @@ class MangaTranslator:
 
     @staticmethod
     def _normalize_image_url(url: str) -> str:
-        """لینک‌های GitHub blob رو به raw تبدیل می‌کنه."""
-        # https://github.com/user/repo/blob/branch/path → raw
         if "github.com/" in url and "/blob/" in url:
             url = url.replace("github.com/", "raw.githubusercontent.com/").replace("/blob/", "/")
         return url
@@ -1170,7 +1085,6 @@ class MangaTranslator:
                 return None
             return out_file
 
-        # ۱) اگه لینک مستقیم عکسه (پسوند تصویر یا Content-Type)
         path_ext = os.path.splitext(urlparse(url).path)[1].lower()
         resp = requests.get(url, headers=headers, timeout=60, stream=True)
         resp.raise_for_status()
@@ -1188,7 +1102,6 @@ class MangaTranslator:
                 return [saved_path]
             raise ValueError(f"محتوای لینک تصویر معتبر نبود: {url}")
 
-        # ۲) صفحه HTML — استخراج تگ‌های img
         soup = BeautifulSoup(resp.content, "html.parser")
         img_urls, seen = [], set()
         for img in soup.find_all("img"):
@@ -1259,16 +1172,7 @@ class MangaTranslator:
                 zf.write(os.path.join(folder, name), arcname=name)
 
     def _write_image(self, image: np.ndarray, path: str) -> None:
-        """
-        برای کم‌حجم‌تر شدن خروجی نسبت به قبل، سه کار می‌کنیم:
-        ۱) اگه max_output_width ست شده باشه، عرض همه تصاویر دقیقاً به همان
-           مقدار (پیش‌فرض ۹۰۰) resize می‌شه.
-        ۲) برای webp به‌جای cv2.imwrite از Pillow با method=6 استفاده
-           می‌کنیم؛ در همون کیفیت، تلاش فشرده‌سازیش بیشتره و معمولاً
-           ۲۰-۴۰٪ حجم کمتری نسبت به انکودر پیش‌فرض OpenCV تولید می‌کنه.
-        ۳) برای jpg پرچم OPTIMIZE و برای png بیشترین سطح فشرده‌سازی
-           (که lossless می‌مونه، فقط حجم فایل رو کم می‌کنه) رو فعال می‌کنیم.
-        """
+
         ext = os.path.splitext(path)[1].lower()
 
         out_image = image
@@ -1427,7 +1331,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
 def main():
     args = build_arg_parser().parse_args()
 
-    # جمع‌آوری کلیدها از --api-key (چند بار) و env
     keys: List[str] = []
     if args.api_key:
         for item in args.api_key:
