@@ -11,11 +11,6 @@ on:
         description: "کلید Gemini ai:  key1,key2"
         required: true
         type: string
-      font_url:
-        description: "لینک فونت TTF فارسی (اختیاری - پیش‌فرض Vazirmatn Bold)"
-        required: false
-        default: ""
-        type: string
       ocr_lang:
         description: "زبان OCR (مثلاً en یا ko en یا ja en)"
         required: false
@@ -34,11 +29,6 @@ on:
         options:
           - rtl
           - ltr
-      max_width:
-        description: "عرض خروجی (پیکسل) - 0 یعنی بدون تغییر"
-        required: false
-        default: "900"
-        type: string
       output_format:
         description: "فرمت خروجی"
         required: false
@@ -47,7 +37,6 @@ on:
         options:
           - pdf
           - zip
-          - folder
 
 jobs:
   translate:
