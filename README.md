@@ -65,7 +65,7 @@
  ### ۳) اجرای دستی (لوکال)
 ```bash
 git clone https://github.com/amirwolf5122/Manga-AutoTranslate.git
-cd manga-translator-fa
+cd Manga-AutoTranslate
 
 python -m venv .venv
 source .venv/bin/activate   # ویندوز: .venv\Scripts\activate
