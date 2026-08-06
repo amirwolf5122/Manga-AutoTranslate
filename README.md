@@ -14,7 +14,6 @@
 |:---:|:---:|
 | ![before](examples/before.png) | ![after](examples/after.png) |
 
-> تصاویر نمونه را در پوشهٔ `examples/` قرار دهید (یا از خروجی خودتان جایگزین کنید).
 
 ---
 
