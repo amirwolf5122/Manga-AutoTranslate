@@ -421,10 +421,8 @@ class MangaTranslator:
                 near_same = centers_close(r.rect, u.rect) and text_similar(r.source_text, u.source_text)
                 if iou > overlap_thresh or c1 > 0.5 or c2 > 0.5 or near_same:
                     is_dup = True
-                    # متن کامل‌تر رو نگه دار
                     if len(r.source_text) > len(u.source_text):
                         u.source_text = r.source_text
-                        # boxes رو ادغام کن
                         u.boxes = u.boxes + r.boxes
                         x0 = min(u.rect[0], r.rect[0])
                         y0 = min(u.rect[1], r.rect[1])
@@ -1061,10 +1059,8 @@ class MangaTranslator:
         url = MangaTranslator._normalize_image_url(url)
 
         def _save_bytes(content: bytes, index: int, hint_url: str = "") -> Optional[str]:
-            # تشخیص پسوند از URL یا هدر
             ext = os.path.splitext(urlparse(hint_url or url).path)[1].lower()
             if ext not in IMAGE_EXTS:
-                # از magic bytes
                 if content[:3] == b"\xff\xd8\xff":
                     ext = ".jpg"
                 elif content[:8] == b"\x89PNG\r\n\x1a\n":
@@ -1338,7 +1334,6 @@ def main():
     env_key = os.environ.get("GEMINI_API_KEY", "")
     if env_key:
         keys.extend(k.strip() for k in env_key.replace(";", ",").split(",") if k.strip())
-    # حذف تکراری با حفظ ترتیب
     seen = set()
     unique_keys = []
     for k in keys:
