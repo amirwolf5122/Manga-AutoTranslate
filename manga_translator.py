@@ -94,7 +94,7 @@ class MangaTranslator:
         request_delay: float = 0.0,
         max_chunk_height: int = 3600,
         chunk_overlap: int = 300,
-        img_format: str = "webp",
+        img_format: str = "jpg",
         img_quality: int = 80,
         max_workers: int = 2,
         mag_ratio: float = 1.35,
@@ -1301,7 +1301,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--request-delay", type=float, default=0.0)
     p.add_argument("--max-retries", type=int, default=4)
     p.add_argument("--max-chunk-height", type=int, default=3600)
-    p.add_argument("--img-format", choices=["webp", "png", "jpg"], default="webp")
+    p.add_argument("--img-format", choices=["webp", "png", "jpg"], default="jpg")
     p.add_argument("--quality", type=int, default=80,
                     help="کیفیت فشرده‌سازی خروجی (۱-۱۰۰)؛ برای حجم کمتر عدد رو پایین‌تر بیار")
     p.add_argument("--max-width", type=int, default=900,
