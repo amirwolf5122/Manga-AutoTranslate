@@ -39,9 +39,10 @@
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
 
 1. یک Runtime با **GPU** بسازید:  
-   `Runtime → Change runtime type → GPU (T4)`
-2. [نوت‌بوک Colab](https://colab.research.google.com/github/amirwolf5122/Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb) را باز کنید یا سلول‌ها را یکی‌یکی اجرا کنید!
 
+   `Runtime → Change runtime type → GPU (T4)`
+   
+اجرا همه وارد کنید Run all
 ---
 
 ### ۲) اجرا با GitHub Actions (بدون نصب)
