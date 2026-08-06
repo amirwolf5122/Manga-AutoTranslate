@@ -43,6 +43,7 @@
    `Runtime → Change runtime type → GPU (T4)`
    
 اجرا همه وارد کنید Run all
+
 ---
 
 ### ۲) اجرا با GitHub Actions (بدون نصب)
