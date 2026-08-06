@@ -35,7 +35,7 @@ if errorlevel 1 set NEED_INSTALL=1
 
 if !NEED_INSTALL! equ 1 (
     echo برخی پکیج‌ها نصب نیستند یا نسخه اشتباه دارند. در حال نصب دقیق...
-    
+    pip install --upgrade pip setuptools wheel
     pip install --no-cache-dir --constraint constraints.txt numpy==1.26.4
     pip install --no-cache-dir --constraint constraints.txt opencv-python-headless==4.8.1.78
     pip install --no-cache-dir --no-deps --constraint constraints.txt paddlepaddle==2.6.2 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
