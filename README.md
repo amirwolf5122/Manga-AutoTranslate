@@ -44,6 +44,7 @@
 3. وابستگی‌ها را نصب کنید، فونت فارسی را دانلود کنید، اسکریپت را بنویسید و اجرا کنید.
 
 ## ساخت خودکار:
+
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
 ##
 ```text
