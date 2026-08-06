@@ -21,3 +21,5 @@ imageio>=2.31
 matplotlib>=3.7
 networkx>=3.0
 shapely>=2.0
+decorator
+typing_extensions
