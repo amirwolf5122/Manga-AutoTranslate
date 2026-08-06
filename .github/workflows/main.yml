@@ -93,7 +93,6 @@ jobs:
             --ocr-lang ${{ inputs.ocr_lang }} \
             --model "${{ inputs.model }}" \
             --reading-order ${{ inputs.reading_order }} \
-            --max-width ${{ inputs.max_width }} \
             --cpu \
             --api-key "$GEMINI_API_KEY"
 
