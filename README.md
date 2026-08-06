@@ -157,7 +157,7 @@ python manga_translator.py \
 ## ساختار پروژه
 
 ```text
-manga-translator-fa/
+Manga-AutoTranslate/
 ├── manga_translator.py   # اسکریپت اصلی
 ├── requirements.txt
 ├── README.md
