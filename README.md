@@ -35,15 +35,15 @@
 
 ### ۱) Google Colab (پیشنهادی — بدون نصب روی سیستم)
 
+## ساخت خودکار:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
+##
 1. یک Runtime با **GPU** بسازید:  
    `Runtime → Change runtime type → GPU (T4)`
 2. نوت‌بوک Colab را باز کنید یا سلول‌های زیر را یکی‌یکی اجرا کنید.
 3. وابستگی‌ها را نصب کنید، فونت فارسی را دانلود کنید، اسکریپت را بنویسید و اجرا کنید.
 
-## ساخت خودکار:
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
-##
 ```text
 
 https://colab.research.google.com/
