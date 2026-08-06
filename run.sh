@@ -47,7 +47,7 @@ if [ $NEED_INSTALL -eq 1 ]; then
     pip install --no-cache-dir --no-deps --constraint constraints.txt paddleocr==2.7.0.3
     pip install --no-cache-dir --constraint constraints.txt pymupdf
     pip install --no-cache-dir --constraint constraints.txt --ignore-installed attrdict cython fire lxml openpyxl pdf2docx premailer python-docx visualdl
-    pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4
+    pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4 google-genai
     
     echo "نصب وابستگی‌ها تمام شد."
 else
