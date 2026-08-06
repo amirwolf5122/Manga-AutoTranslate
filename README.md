@@ -1,6 +1,5 @@
 # مترجم خودکار مانگا / مانهوا (فارسی)
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
@@ -44,11 +43,14 @@
 2. نوت‌بوک Colab را باز کنید یا سلول‌های زیر را یکی‌یکی اجرا کنید.
 3. وابستگی‌ها را نصب کنید، فونت فارسی را دانلود کنید، اسکریپت را بنویسید و اجرا کنید.
 
+## ساخت خودکار:
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
+##
 ```text
+
 https://colab.research.google.com/
 ```
-
-نصب سریع در Colab:
+4. نصب سریع در Colab:
 
 ```python
 !pip install -q numpy==1.26.4
