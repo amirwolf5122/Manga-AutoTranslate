@@ -1,9 +1,11 @@
 # مترجم خودکار مانگا / مانهوا (فارسی)
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122/Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-ابزاری برای **ترجمهٔ خودکار صفحات مانگا و مانهوا به فارسی**:  
+ابزاری برای **ترجمهٔ خودکار صفحات مانگا و مانهوا به فارسی**:
+
 متن را با OCR می‌خواند، متن اصلی را از داخل حباب پاک می‌کند، با **Gemini API** به فارسی محاوره‌ای ترجمه می‌کند و ترجمه را دوباره داخل همان حباب می‌نویسد.
 
 ---
@@ -13,6 +15,7 @@
 | قبل | بعد |
 |:---:|:---:|
 | ![before](examples/before.png) | ![after](examples/after.png) |
+
 ---
 
 ## ویژگی‌ها
@@ -31,27 +34,23 @@
 
 ---
 
-## سه روش اجرا
+## چهار روش اجرا
 
 ### ۱) Google Colab (پیشنهادی — بدون نصب روی سیستم)
 
-
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122/Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
 
 1. یک Runtime با **GPU** بسازید:  
-
    `Runtime → Change runtime type → GPU (T4)`
-   
-اجرا همه وارد کنید Run all
+2. همه سلول‌ها را با **Run all** اجرا کنید.
 
 ---
 
 ### ۲) اجرا با GitHub Actions (بدون نصب)
 
 #### نحوه استفاده:
-
 1. برو به تب **Actions**
-2. یکی از سه workflow بالا را انتخاب کن
+2. یکی از workflowها را انتخاب کن
 3. روی **Run workflow** بزن
 4. فیلدهای لازم را پر کن (لینک یا فایل + کلید Gemini)
 5. بعد از اتمام، از قسمت **Artifacts** فایل ترجمه‌شده را دانلود کن
@@ -62,21 +61,49 @@
 - برای فصل‌های خیلی بزرگ ممکن است به timeout برخورد کنید (حداکثر ۶ ساعت).
 
 ---
- ### ۳) اجرای دستی (لوکال)
+
+### ۳) اجرا با GitHub Codespaces (محیط ابری کامل)
+
+1. روی دکمه سبز **Code** کلیک کن → تب **Codespaces** → **Create codespace on main**
+2. بعد از آماده شدن محیط، در ترمینال این دستور را بزن:
+
+```bash
+bash run.sh
+```
+
+یا برای ویندوز داخل Codespaces:
+
+```bash
+./run.bat
+```
+
+**مزایا:**
+- محیط کامل لینوکسی آماده (مثل لوکال)
+- نیازی به نصب چیزی روی سیستم خودت نیست
+- می‌تونی فایل‌ها را مستقیم آپلود کنی یا از لینک استفاده کنی
+- امکان استفاده از GPU در بعضی پلن‌ها وجود دارد
+
+**نکته:** بعد از اتمام کار، Codespace را Stop کن تا منابع مصرف نشود.
+
+---
+
+### ۴) اجرای دستی (لوکال)
+
 ```bash
 git clone https://github.com/amirwolf5122/Manga-AutoTranslate.git
 cd Manga-AutoTranslate
 
 python -m venv .venv
-source .venv/bin/activate
-# ویندوز: .venv\Scripts\activate
+source .venv/bin/activate          # لینوکس / مک
+# .venv\Scripts\activate           # ویندوز
 ```
 
 ```bash
-#لینوکس مک:
+# لینوکس / مک:
 bash run.sh
-#ویندوز:
-start run.bat
+
+# ویندوز:
+run.bat
 ```
 
 ---
@@ -121,6 +148,8 @@ start run.bat
 ```text
 Manga-AutoTranslate/
 ├── manga_translator.py   # اسکریپت اصلی
+├── run.sh                # رانر تعاملی لینوکس/مک
+├── run.bat               # رانر تعاملی ویندوز
 ├── requirements.txt
 ├── README.md
 └── fonts/                # فونت فارسی (دانلود جداگانه)
@@ -130,5 +159,6 @@ Manga-AutoTranslate/
 
 ## لایسنس
 
-MIT — آزاد برای استفاده شخصی و غیرتجاری.  
+MIT — آزاد برای استفاده شخصی و غیرتجاری.
+
 حقوق مانگا/مانهوا متعلق به ناشر و خالق اثر است؛ این ابزار فقط برای مطالعهٔ شخصی است.
