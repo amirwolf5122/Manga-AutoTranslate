@@ -9,6 +9,16 @@ echo ""
 
 echo "۰) بررسی و نصب وابستگی‌ها..."
 
+if ! ldconfig -p 2>/dev/null | grep -q "libGL.so.1"; then
+    echo "نصب کتابخانه‌های سیستمی مورد نیاز OpenCV..."
+    if command -v apt-get &> /dev/null; then
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq libgl1 libglib2.0-0 libsm6 libxext6 libxrender1
+    elif command -v yum &> /dev/null; then
+        sudo yum install -y mesa-libGL glib2
+    fi
+fi
+
 cat > constraints.txt << EOF
 numpy==1.26.4
 opencv-python-headless==4.8.1.78
@@ -37,10 +47,15 @@ fi
 if ! python3 -c "import pymupdf" 2>/dev/null; then
     NEED_INSTALL=1
 fi
+if ! python3 -c "import google.genai" 2>/dev/null; then
+    NEED_INSTALL=1
+fi
 
 if [ $NEED_INSTALL -eq 1 ]; then
     echo "برخی پکیج‌ها نصب نیستند یا نسخه اشتباه دارند. در حال نصب دقیق..."
+    
     pip install --upgrade pip setuptools wheel
+    
     pip install --no-cache-dir --constraint constraints.txt numpy==1.26.4
     pip install --no-cache-dir --constraint constraints.txt opencv-python-headless==4.8.1.78
     pip install --no-cache-dir --no-deps --constraint constraints.txt paddlepaddle==2.6.2 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
