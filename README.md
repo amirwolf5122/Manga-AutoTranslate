@@ -129,9 +129,6 @@ Manga-AutoTranslate/
 ├── manga_translator.py   # اسکریپت اصلی
 ├── requirements.txt
 ├── README.md
-├── examples/             # قبل / بعد
-│   ├── before.png
-│   └── after.png
 └── fonts/                # فونت فارسی (دانلود جداگانه)
 ```
 
