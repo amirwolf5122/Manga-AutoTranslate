@@ -64,7 +64,7 @@
 ---
  ### ۳) اجرای دستی (لوکال)
 ```bash
-git clone https://github.com/YOUR_USER/manga-translator-fa.git
+git clone https://github.com/amirwolf5122/Manga-AutoTranslate.git
 cd manga-translator-fa
 
 python -m venv .venv
