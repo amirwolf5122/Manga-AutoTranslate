@@ -52,29 +52,31 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libgomp1
       - name: Install Python dependencies
 
         run: |
           python -m pip install --upgrade pip
-          pip install numpy==1.26.4
-          pip install -r requirements.txt  --no-deps
+          cat > constraints.txt << EOF
+          numpy==1.26.4
+          opencv-python-headless==4.8.1.78
+          opencv-python==4.8.1.78
+          opencv-contrib-python==4.8.1.78
+          EOF
+
+          pip install --no-cache-dir --constraint constraints.txt numpy==1.26.4
+          pip install --no-cache-dir --constraint constraints.txt opencv-python-headless==4.8.1.78
+          pip install --no-cache-dir --no-deps --constraint constraints.txt paddlepaddle==2.6.2 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+          pip install --no-cache-dir --no-deps --constraint constraints.txt paddleocr==2.7.0.3
+          pip install --no-cache-dir --constraint constraints.txt pymupdf
+          pip install --no-cache-dir --constraint constraints.txt attrdict cython fire lxml openpyxl pdf2docx premailer python-docx visualdl
+          pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4
       - name: Download font
         run: |
           mkdir -p fonts
-          if [ -n "${{ inputs.font_url }}" ]; then
-            echo "Downloading custom font..."
-            curl -L -o fonts/custom.ttf "${{ inputs.font_url }}"
-            FONT_PATH="fonts/custom.ttf"
-          else
-            echo "Downloading Vazirmatn Bold..."
-            curl -L -o fonts/Vazirmatn-Bold.ttf \
-              "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf"
-            FONT_PATH="fonts/Vazirmatn-Bold.ttf"
-          fi
+          echo "Downloading Vazirmatn Bold..."
+          curl -L -o fonts/Vazirmatn-Bold.ttf \
+            "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf"
+          FONT_PATH="fonts/Vazirmatn-Bold.ttf"
           echo "FONT_PATH=$FONT_PATH" >> $GITHUB_ENV
 
       - name: Run translator
