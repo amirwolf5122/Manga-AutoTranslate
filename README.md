@@ -31,66 +31,36 @@
 
 ---
 
-## دو روش اجرا
+## سه روش اجرا
 
 ### ۱) Google Colab (پیشنهادی — بدون نصب روی سیستم)
 
-## ساخت خودکار:
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/amirwolf5122//Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb)
-##
+
 1. یک Runtime با **GPU** بسازید:  
    `Runtime → Change runtime type → GPU (T4)`
-2. نوت‌بوک Colab را باز کنید یا سلول‌های زیر را یکی‌یکی اجرا کنید.
-3. وابستگی‌ها را نصب کنید، فونت فارسی را دانلود کنید، اسکریپت را بنویسید و اجرا کنید.
-
-```text
-
-https://colab.research.google.com/
-```
-4. نصب سریع در Colab:
-
-```python
-!pip install -q numpy==1.26.4
-!pip install -q --no-deps PyMuPDF opencv-python-headless Pillow google-genai \
-    arabic-reshaper python-bidi requests beautifulsoup4
-!pip install -q --no-deps imgaug scipy imageio matplotlib networkx shapely
-!pip install -q --no-deps paddlepaddle==2.6.2 lmdb paddleocr==2.7.0.3
-!pip install -q astor scikit-image pyclipper tqdm rapidfuzz
-```
-
-فونت فارسی:
-
-```python
-!mkdir -p fonts
-!wget -q -O fonts/Vazirmatn-Bold.ttf \
-  https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf
-```
-
-اجرا:
-
-```bash
-python manga_translator.py \
-  -i input_pages \
-  -o output_pages_fa.pdf \
-  --font fonts/Vazirmatn-Bold.ttf \
-  --ocr-lang en \
-  --reading-order rtl \
-  --api-key "YOUR_GEMINI_KEY"
-```
-
-چند کلید برای failover:
-
-```bash
---api-key "KEY1,KEY2,KEY3"
-# یا
-export GEMINI_API_KEY="KEY1,KEY2,KEY3"
-```
+2. [نوت‌بوک Colab](https://colab.research.google.com/github/amirwolf5122/Manga-AutoTranslate/blob/main/Manga_Translator_Colab.ipynb) را باز کنید یا سلول‌ها را یکی‌یکی اجرا کنید!
 
 ---
 
-### ۲) اجرای دستی (لوکال)
+### ۲) اجرا با GitHub Actions (بدون نصب)
 
+#### نحوه استفاده:
+
+1. برو به تب **Actions**
+2. یکی از سه workflow بالا را انتخاب کن
+3. روی **Run workflow** بزن
+4. فیلدهای لازم را پر کن (لینک یا فایل + کلید Gemini)
+5. بعد از اتمام، از قسمت **Artifacts** فایل ترجمه‌شده را دانلود کن
+
+**نکات:**
+- فونت اختیاری است؛ اگر نزنید خودش Vazirmatn را استفاده می‌کند.
+- چون runnerهای GitHub GPU ندارند، پردازش روی CPU انجام می‌شود و نسبت به Colab کندتر است.
+- برای فصل‌های خیلی بزرگ ممکن است به timeout برخورد کنید (حداکثر ۶ ساعت).
+
+---
+ ### ۳) اجرای دستی (لوکال)
 ```bash
 git clone https://github.com/YOUR_USER/manga-translator-fa.git
 cd manga-translator-fa
