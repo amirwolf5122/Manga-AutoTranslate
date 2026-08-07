@@ -49,7 +49,7 @@
 ### ۲) اجرا با GitHub Actions (بدون نصب)
 
 #### نحوه استفاده:
-مهم: یک نسخه fork جدا ایجاد کنید
+مهم: یک نسخه [fork](https://github.com/amirwolf5122/Manga-AutoTranslate/fork) جدا ایجاد کنید
 1. برو به تب **Actions**
 2. یکی از workflowها را انتخاب کن
 3. روی **Run workflow** بزن
