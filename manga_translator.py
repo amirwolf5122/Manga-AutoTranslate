@@ -19,7 +19,7 @@ import threading
 import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFont
-
+import random
 try:
     import arabic_reshaper
     from bidi.algorithm import get_display
@@ -106,6 +106,7 @@ class MangaTranslator:
             keys = [k.strip() for k in gemini_api_key.replace(";", ",").split(",") if k.strip()]
         else:
             keys = [k.strip() for k in gemini_api_key if k and str(k).strip()]
+        random.shuffle(keys)
         if not keys:
             raise ValueError("حداقل یک کلید Gemini API لازم است.")
         self._api_keys: List[str] = keys
