@@ -497,189 +497,35 @@ class MangaTranslator:
         return unique
 
     def clean_image(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
-        h_img, w_img = image.shape[:2]
-        cleaned = image.copy()
-        gray_full = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+      h_img, w_img = image.shape[:2]
+      cleaned = image.copy()
+    
+      text_mask = np.zeros((h_img, w_img), dtype=np.uint8)
 
-        for region in regions:
-            x, y, rw, rh = region.rect
-            pad = max(2, min(self.mask_padding, int(min(rw, rh) * 0.04)))
+      for region in regions:
+        for poly in region.boxes:
+            pts = np.array(poly, np.int32).reshape((-1, 1, 2))
+            cv2.fillPoly(text_mask, [pts], 255)
 
-            x0 = max(0, x - pad - 6)
-            y0 = max(0, y - pad - 6)
-            x1 = min(w_img, x + rw + pad + 6)
-            y1 = min(h_img, y + rh + pad + 6)
-            if x1 <= x0 or y1 <= y0:
-                continue
-
-            poly_mask = np.zeros((h_img, w_img), dtype=np.uint8)
-            for poly in region.boxes:
-                cv2.fillPoly(poly_mask, [poly], 255)
-
-            k = 3
-            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-            poly_soft = cv2.dilate(poly_mask, kernel, iterations=1)
-
-            local_poly = poly_soft[y0:y1, x0:x1]
-            local_orig = poly_mask[y0:y1, x0:x1]
-            local_img = image[y0:y1, x0:x1]
-            local_gray = gray_full[y0:y1, x0:x1]
-
-            if local_img.size == 0 or not np.any(local_poly):
-                continue
-
-            g = local_gray.astype(np.float32)
-            region_view = cleaned[y0:y1, x0:x1].copy()
-
-            outer = cv2.dilate(local_orig, np.ones((7, 7), np.uint8), iterations=1)
-            ring = cv2.subtract(
-                outer, cv2.dilate(local_orig, np.ones((3, 3), np.uint8), iterations=1)
-            )
-            ring_px = local_img[ring > 0]
-            ring_g = g[ring > 0]
-
-            if len(ring_px) < 12:
-                non_text = local_poly == 0
-                ring_px = local_img[non_text]
-                ring_g = g[non_text]
-
-            if len(ring_px) < 6:
-                ring_px = local_img.reshape(-1, 3)
-                ring_g = g.ravel()
-
-            ring_px = ring_px.astype(np.float32)
-            ring_g = ring_g.astype(np.float32)
-
-            if len(ring_g) >= 8:
-                q1, q3 = np.percentile(ring_g, [25, 75])
-                iqr = max(q3 - q1, 1.0)
-                keep = (ring_g >= q1 - 1.5 * iqr) & (ring_g <= q3 + 1.5 * iqr)
-                if np.count_nonzero(keep) >= 6:
-                    ring_px = ring_px[keep]
-                    ring_g = ring_g[keep]
-
-            bg_color = np.median(ring_px, axis=0)
-            bg_gray_val = float(np.median(ring_g))
-            bg_std = float(np.std(ring_g)) if len(ring_g) > 1 else 0.0
-            b, gc, r = float(bg_color[0]), float(bg_color[1]), float(bg_color[2])
-            sat = max(b, gc, r) - min(b, gc, r)
-
-            area_std = float(np.std(g)) if g.size > 0 else 0.0
-            src_len = max(1, len((region.source_text or "").strip()))
-            area = max(1, rw * rh)
-            is_logo_title = (area / src_len > 2500 and area_std > 35) or (
-                rw > 200 and rh > 60 and src_len <= 16 and area_std > 40
-            )
-
-            is_white_bubble = (
-                bg_gray_val >= 200 and sat < 30 and bg_std < 30 and not is_logo_title
-            )
-            is_pure_black = sat < 10 and bg_std < 12 and bg_gray_val <= 15
-
-            if is_white_bubble:
-                bg_color = np.array([255.0, 255.0, 255.0])
-                bg_gray_val = 255.0
-            elif is_pure_black:
-                bg_color = np.array([0.0, 0.0, 0.0])
-                bg_gray_val = 0.0
-
-            bg_u8 = np.clip(np.round(bg_color), 0, 255).astype(np.uint8)
-            border_protect = np.zeros_like(local_gray, dtype=np.uint8)
-            if is_white_bubble:
-                dark_lines = (g < 50).astype(np.uint8) * 255
-                thin = cv2.morphologyEx(dark_lines, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
-                h_line = cv2.morphologyEx(thin, cv2.MORPH_OPEN, np.ones((1, 5), np.uint8))
-                v_line = cv2.morphologyEx(thin, cv2.MORPH_OPEN, np.ones((5, 1), np.uint8))
-                lines = cv2.bitwise_or(h_line, v_line)
-                if np.count_nonzero(lines) < 8:
-                    lines = thin
-                border_protect = cv2.dilate(lines, np.ones((2, 2), np.uint8), iterations=1)
-                border_protect = cv2.bitwise_and(border_protect, cv2.bitwise_not(local_orig))
-
-            if is_logo_title:
-                blur = cv2.GaussianBlur(local_gray, (5, 5), 0).astype(np.float32)
-                diff = np.abs(g - blur)
-                ink = ((diff > 12) & (local_poly > 0)).astype(np.uint8) * 255
-                if bg_gray_val < 128:
-                    ink2 = ((g > bg_gray_val + 20) & (local_poly > 0)).astype(np.uint8) * 255
-                else:
-                    ink2 = ((g < bg_gray_val - 20) & (local_poly > 0)).astype(np.uint8) * 255
-                ink = cv2.bitwise_or(ink, ink2)
-                ink = cv2.bitwise_or(ink, local_orig)
-                ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
-                ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
-                try:
-                    inpainted = cv2.inpaint(region_view, ink, 4, cv2.INPAINT_TELEA)
-                    region_view = np.where(ink[..., None] > 0, inpainted, region_view)
-                except Exception:
-                    region_view[ink == 255] = bg_u8
-
-            elif is_white_bubble:
-                ink = ((g < 195) & (local_poly > 0)).astype(np.uint8) * 255
-                if np.any(border_protect):
-                    ink = cv2.bitwise_and(ink, cv2.bitwise_not(border_protect))
-                ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
-                ink = cv2.dilate(ink, np.ones((2, 2), np.uint8), iterations=1)
-                if np.any(border_protect):
-                    ink = cv2.bitwise_and(ink, cv2.bitwise_not(border_protect))
-
-                if np.count_nonzero(ink) < 4:
-                    ink = local_orig.copy()
-                    if np.any(border_protect):
-                        ink = cv2.bitwise_and(ink, cv2.bitwise_not(border_protect))
-
-                try:
-                    inpainted = cv2.inpaint(region_view, ink, 5, cv2.INPAINT_TELEA)
-                    region_view = np.where(ink[..., None] > 0, inpainted, region_view)
-                except Exception:
-                    region_view[ink > 0] = bg_u8
-
-                g2 = cv2.cvtColor(region_view, cv2.COLOR_BGR2GRAY).astype(np.float32)
-                still = ((g2 < 180) & (ink > 0)).astype(np.uint8) * 255
-                if np.any(still):
-                    region_view[still > 0] = bg_u8
-
-            else:
-                inside_g = g[local_poly > 0]
-                if len(inside_g) < 4:
-                    continue
-                if bg_gray_val < 128:
-                    bright = inside_g[inside_g > bg_gray_val]
-                    text_level = (
-                        float(np.percentile(bright, 60))
-                        if len(bright) >= 4
-                        else float(np.percentile(inside_g, 75))
-                    )
-                    thresh = bg_gray_val + max(10.0, 0.35 * (text_level - bg_gray_val))
-                    ink = ((g > thresh) & (local_poly > 0)).astype(np.uint8) * 255
-                else:
-                    dark = inside_g[inside_g < bg_gray_val]
-                    text_level = (
-                        float(np.percentile(dark, 40))
-                        if len(dark) >= 4
-                        else float(np.percentile(inside_g, 25))
-                    )
-                    thresh = bg_gray_val - max(10.0, 0.35 * (bg_gray_val - text_level))
-                    ink = ((g < thresh) & (local_poly > 0)).astype(np.uint8) * 255
-
-                ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
-                if np.count_nonzero(ink) < 6:
-                    ink = local_orig.copy()
-                region_view[ink == 255] = bg_u8
-
-                inpaint_mask = cv2.dilate(ink, np.ones((2, 2), np.uint8), iterations=1)
-                try:
-                    inpainted = cv2.inpaint(region_view, inpaint_mask, 3, cv2.INPAINT_TELEA)
-                    region_view = np.where(inpaint_mask[..., None] > 0, inpainted, region_view)
-                except Exception:
-                    pass
-                core = cv2.erode(ink, np.ones((2, 2), np.uint8), iterations=1)
-                if np.any(core):
-                    region_view[core == 255] = bg_u8
-
-            cleaned[y0:y1, x0:x1] = region_view
-
+      if not np.any(text_mask):
         return cleaned
+
+      hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+      lower_purple = np.array([110, 15, 15])
+      upper_purple = np.array([170, 255, 255])
+      purple_mask = cv2.inRange(hsv, lower_purple, upper_purple)
+
+      near_text = cv2.dilate(text_mask, np.ones((10, 10), np.uint8), iterations=1)
+      purple_around_text = cv2.bitwise_and(purple_mask, near_text)
+
+      full_target_mask = cv2.bitwise_or(text_mask, purple_around_text)
+
+      kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+      dilated_target = cv2.dilate(full_target_mask, kernel, iterations=2)
+
+      cleaned = cv2.inpaint(cleaned, dilated_target, inpaintRadius=4, flags=cv2.INPAINT_TELEA)
+
+      return cleaned
 
     @staticmethod
     def _is_daily_quota_error(err: Exception) -> bool:
