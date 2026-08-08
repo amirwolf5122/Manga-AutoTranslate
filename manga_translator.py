@@ -497,19 +497,18 @@ class MangaTranslator:
         return unique
 
     def clean_image(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
-
         h_img, w_img = image.shape[:2]
         cleaned = image.copy()
         gray_full = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
         for region in regions:
             x, y, rw, rh = region.rect
-            pad = max(self.mask_padding, int(min(rw, rh) * self.pad_ratio))
+            pad = max(2, min(self.mask_padding, int(min(rw, rh) * 0.04)))
 
-            x0 = max(0, x - pad - 12)
-            y0 = max(0, y - pad - 12)
-            x1 = min(w_img, x + rw + pad + 12)
-            y1 = min(h_img, y + rh + pad + 12)
+            x0 = max(0, x - pad - 6)
+            y0 = max(0, y - pad - 6)
+            x1 = min(w_img, x + rw + pad + 6)
+            y1 = min(h_img, y + rh + pad + 6)
             if x1 <= x0 or y1 <= y0:
                 continue
 
@@ -517,13 +516,11 @@ class MangaTranslator:
             for poly in region.boxes:
                 cv2.fillPoly(poly_mask, [poly], 255)
 
-            k = max(5, min(pad * 2 + 3, 13))
-            if k % 2 == 0:
-                k += 1
+            k = 3
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-            poly_dilated = cv2.dilate(poly_mask, kernel, iterations=2)
+            poly_soft = cv2.dilate(poly_mask, kernel, iterations=1)
 
-            local_poly = poly_dilated[y0:y1, x0:x1]
+            local_poly = poly_soft[y0:y1, x0:x1]
             local_orig = poly_mask[y0:y1, x0:x1]
             local_img = image[y0:y1, x0:x1]
             local_gray = gray_full[y0:y1, x0:x1]
@@ -534,30 +531,30 @@ class MangaTranslator:
             g = local_gray.astype(np.float32)
             region_view = cleaned[y0:y1, x0:x1].copy()
 
-            outer = cv2.dilate(local_orig, np.ones((11, 11), np.uint8), iterations=2)
+            outer = cv2.dilate(local_orig, np.ones((7, 7), np.uint8), iterations=1)
             ring = cv2.subtract(
                 outer, cv2.dilate(local_orig, np.ones((3, 3), np.uint8), iterations=1)
             )
             ring_px = local_img[ring > 0]
             ring_g = g[ring > 0]
 
-            if len(ring_px) < 16:
+            if len(ring_px) < 12:
                 non_text = local_poly == 0
                 ring_px = local_img[non_text]
                 ring_g = g[non_text]
 
-            if len(ring_px) < 8:
+            if len(ring_px) < 6:
                 ring_px = local_img.reshape(-1, 3)
                 ring_g = g.ravel()
 
             ring_px = ring_px.astype(np.float32)
             ring_g = ring_g.astype(np.float32)
 
-            if len(ring_g) >= 12:
+            if len(ring_g) >= 8:
                 q1, q3 = np.percentile(ring_g, [25, 75])
                 iqr = max(q3 - q1, 1.0)
                 keep = (ring_g >= q1 - 1.5 * iqr) & (ring_g <= q3 + 1.5 * iqr)
-                if np.count_nonzero(keep) >= 8:
+                if np.count_nonzero(keep) >= 6:
                     ring_px = ring_px[keep]
                     ring_g = ring_g[keep]
 
@@ -575,7 +572,7 @@ class MangaTranslator:
             )
 
             is_white_bubble = (
-                bg_gray_val >= 200 and sat < 25 and bg_std < 25 and not is_logo_title
+                bg_gray_val >= 200 and sat < 30 and bg_std < 30 and not is_logo_title
             )
             is_pure_black = sat < 10 and bg_std < 12 and bg_gray_val <= 15
 
@@ -587,6 +584,17 @@ class MangaTranslator:
                 bg_gray_val = 0.0
 
             bg_u8 = np.clip(np.round(bg_color), 0, 255).astype(np.uint8)
+            border_protect = np.zeros_like(local_gray, dtype=np.uint8)
+            if is_white_bubble:
+                dark_lines = (g < 50).astype(np.uint8) * 255
+                thin = cv2.morphologyEx(dark_lines, cv2.MORPH_OPEN, np.ones((2, 2), np.uint8))
+                h_line = cv2.morphologyEx(thin, cv2.MORPH_OPEN, np.ones((1, 5), np.uint8))
+                v_line = cv2.morphologyEx(thin, cv2.MORPH_OPEN, np.ones((5, 1), np.uint8))
+                lines = cv2.bitwise_or(h_line, v_line)
+                if np.count_nonzero(lines) < 8:
+                    lines = thin
+                border_protect = cv2.dilate(lines, np.ones((2, 2), np.uint8), iterations=1)
+                border_protect = cv2.bitwise_and(border_protect, cv2.bitwise_not(local_orig))
 
             if is_logo_title:
                 blur = cv2.GaussianBlur(local_gray, (5, 5), 0).astype(np.float32)
@@ -598,45 +606,38 @@ class MangaTranslator:
                     ink2 = ((g < bg_gray_val - 20) & (local_poly > 0)).astype(np.uint8) * 255
                 ink = cv2.bitwise_or(ink, ink2)
                 ink = cv2.bitwise_or(ink, local_orig)
-                ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8), iterations=2)
-                ink = cv2.dilate(
-                    ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=2
-                )
+                ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
+                ink = cv2.dilate(ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)
                 try:
-                    inpainted = cv2.inpaint(region_view, ink, 5, cv2.INPAINT_TELEA)
+                    inpainted = cv2.inpaint(region_view, ink, 4, cv2.INPAINT_TELEA)
                     region_view = np.where(ink[..., None] > 0, inpainted, region_view)
                 except Exception:
                     region_view[ink == 255] = bg_u8
 
             elif is_white_bubble:
-                fill = local_poly.copy()
-                dark = (g < 200).astype(np.uint8) * 255
-                near = cv2.dilate(local_poly, np.ones((15, 15), np.uint8), iterations=1)
-                dark = cv2.bitwise_and(dark, near)
-                fill = cv2.bitwise_or(fill, dark)
-                fill = cv2.morphologyEx(fill, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8), iterations=2)
-                fill = cv2.dilate(
-                    fill, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=2
-                )
-                region_view[fill > 0] = bg_u8
-                ink = fill
+                ink = ((g < 195) & (local_poly > 0)).astype(np.uint8) * 255
+                if np.any(border_protect):
+                    ink = cv2.bitwise_and(ink, cv2.bitwise_not(border_protect))
+                ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
+                ink = cv2.dilate(ink, np.ones((2, 2), np.uint8), iterations=1)
+                if np.any(border_protect):
+                    ink = cv2.bitwise_and(ink, cv2.bitwise_not(border_protect))
+
+                if np.count_nonzero(ink) < 4:
+                    ink = local_orig.copy()
+                    if np.any(border_protect):
+                        ink = cv2.bitwise_and(ink, cv2.bitwise_not(border_protect))
+
+                try:
+                    inpainted = cv2.inpaint(region_view, ink, 5, cv2.INPAINT_TELEA)
+                    region_view = np.where(ink[..., None] > 0, inpainted, region_view)
+                except Exception:
+                    region_view[ink > 0] = bg_u8
 
                 g2 = cv2.cvtColor(region_view, cv2.COLOR_BGR2GRAY).astype(np.float32)
-                residual = ((g2 < 180) & (near > 0)).astype(np.uint8) * 255
-                residual = cv2.dilate(residual, np.ones((3, 3), np.uint8), iterations=1)
-                if np.any(residual):
-                    region_view[residual > 0] = bg_u8
-                    ink = cv2.bitwise_or(ink, residual)
-
-                inpaint_mask = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=2)
-                try:
-                    inpainted = cv2.inpaint(region_view, inpaint_mask, 4, cv2.INPAINT_TELEA)
-                    region_view = np.where(inpaint_mask[..., None] > 0, inpainted, region_view)
-                except Exception:
-                    pass
-                core = cv2.erode(ink, np.ones((2, 2), np.uint8), iterations=1)
-                if np.any(core):
-                    region_view[core == 255] = bg_u8
+                still = ((g2 < 180) & (ink > 0)).astype(np.uint8) * 255
+                if np.any(still):
+                    region_view[still > 0] = bg_u8
 
             else:
                 inside_g = g[local_poly > 0]
@@ -661,17 +662,14 @@ class MangaTranslator:
                     thresh = bg_gray_val - max(10.0, 0.35 * (bg_gray_val - text_level))
                     ink = ((g < thresh) & (local_poly > 0)).astype(np.uint8) * 255
 
-                ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=2)
-                ink = cv2.dilate(
-                    ink, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1
-                )
-                if np.count_nonzero(ink) < 8:
-                    ink = local_poly.copy()
+                ink = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8), iterations=1)
+                if np.count_nonzero(ink) < 6:
+                    ink = local_orig.copy()
                 region_view[ink == 255] = bg_u8
 
-                inpaint_mask = cv2.dilate(ink, np.ones((3, 3), np.uint8), iterations=2)
+                inpaint_mask = cv2.dilate(ink, np.ones((2, 2), np.uint8), iterations=1)
                 try:
-                    inpainted = cv2.inpaint(region_view, inpaint_mask, 4, cv2.INPAINT_TELEA)
+                    inpainted = cv2.inpaint(region_view, inpaint_mask, 3, cv2.INPAINT_TELEA)
                     region_view = np.where(inpaint_mask[..., None] > 0, inpainted, region_view)
                 except Exception:
                     pass
@@ -800,6 +798,7 @@ class MangaTranslator:
                     raise GeminiQuotaExhausted(
                         f"سهمیه‌ی همه‌ی {len(self._api_keys)} کلید Gemini برای مدل «{self.model_name}» تموم شده."
                     ) from e
+
                 if self._is_banned_or_invalid_key_error(e):
                     print(f"    [!] کلید فعلی بن یا نامعتبر تشخیص داده شد.")
                     if self._remove_current_key_and_switch(reason=str(e)[:120]):
@@ -807,6 +806,7 @@ class MangaTranslator:
                     raise GeminiQuotaExhausted(
                         f"همه کلیدهای Gemini بن/نامعتبر شدن یا تموم شدن."
                     ) from e
+
                 if self._is_model_unavailable_error(e):
                     print(f"    [!] مدل موقتاً در دسترس نیست (۵۰۳/high demand). تست کلید بعدی...")
                     if self._switch_to_next_key(reason="۵۰۳ UNAVAILABLE", cycle=True):
