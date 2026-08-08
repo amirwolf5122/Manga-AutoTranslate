@@ -192,14 +192,75 @@ class MangaTranslator:
 
         self.client = genai.Client(api_key=self._api_keys[0])
         if len(self._api_keys) > 1:
-            print(f"[*] مدل ترجمه: {self.model_name} | {len(self._api_keys)} کلید API (جابه‌جایی خودکار هنگام اتمام سهمیه)")
+            print(f"[*] مدل ترجمه: {self.model_name} | {len(self._api_keys)} کلید API (جابه‌جایی خودکار روی سهمیه/۵۰۳/خطا)")
         else:
             print(f"[*] مدل ترجمه: {self.model_name}")
 
-    def _switch_to_next_key(self) -> bool:
-        self._key_index += 1
-        if self._key_index >= len(self._api_keys):
+    def _mask_key(self, key: str) -> str:
+        if not key:
+            return "(خالی)"
+        if len(key) <= 10:
+            return key[:3] + "..."
+        return key[:6] + "..." + key[-4:]
+
+    def _is_banned_or_invalid_key_error(self, err: Exception) -> bool:
+        msg = str(err).lower()
+        indicators = (
+            "api key not valid",
+            "api_key_invalid",
+            "invalid api key",
+            "permission denied",
+            "permission_denied",
+            "unauthenticated",
+            "api key expired",
+            "api_key_service_blocked",
+            "consumer_suspended",
+            "billing",
+            "has been blocked",
+            "key is invalid",
+            "invalid_argument",
+            "403",
+            "401",
+        )
+        return any(ind in msg for ind in indicators)
+
+    def _is_model_unavailable_error(self, err: Exception) -> bool:
+        msg = str(err)
+        return (
+            "503" in msg
+            or "UNAVAILABLE" in msg
+            or "high demand" in msg.lower()
+            or "try again later" in msg.lower()
+            or "currently experiencing" in msg.lower()
+        )
+
+    def _switch_to_next_key(self, reason: str = "", cycle: bool = False) -> bool:
+        if not self._api_keys:
             return False
+        next_idx = self._key_index + 1
+        if next_idx >= len(self._api_keys):
+            if cycle and len(self._api_keys) > 1:
+                next_idx = 0
+            else:
+                return False
+        self._key_index = next_idx
+        key = self._api_keys[self._key_index]
+        self.client = genai.Client(api_key=key)
+        extra = f" ({reason})" if reason else ""
+        print(f"    [*] کلید API شماره {self._key_index + 1}/{len(self._api_keys)} فعال شد{extra}.")
+        return True
+
+    def _remove_current_key_and_switch(self, reason: str = "") -> bool:
+        if not self._api_keys:
+            return False
+        bad_key = self._api_keys[self._key_index]
+        masked = self._mask_key(bad_key)
+        print(f"    [!] کلید فعلی ({masked}) حذف شد. دلیل: {reason or 'نامعتبر/بن'}")
+        del self._api_keys[self._key_index]
+        if not self._api_keys:
+            return False
+        if self._key_index >= len(self._api_keys):
+            self._key_index = 0
         key = self._api_keys[self._key_index]
         self.client = genai.Client(api_key=key)
         print(f"    [*] کلید API شماره {self._key_index + 1}/{len(self._api_keys)} فعال شد.")
@@ -731,16 +792,37 @@ class MangaTranslator:
                     time.sleep(self.request_delay)
                 return
             except genai_errors.ClientError as e:
+                last_err = e
                 if self._is_daily_quota_error(e):
                     print(f"    [!] سهمیه‌ی کلید {self._key_index + 1}/{len(self._api_keys)} تموم شد.")
-                    if self._switch_to_next_key():
+                    if self._switch_to_next_key(reason="سهمیه روزانه"):
                         continue
                     raise GeminiQuotaExhausted(
                         f"سهمیه‌ی همه‌ی {len(self._api_keys)} کلید Gemini برای مدل «{self.model_name}» تموم شده."
                     ) from e
-                last_err = e
+                if self._is_banned_or_invalid_key_error(e):
+                    print(f"    [!] کلید فعلی بن یا نامعتبر تشخیص داده شد.")
+                    if self._remove_current_key_and_switch(reason=str(e)[:120]):
+                        continue
+                    raise GeminiQuotaExhausted(
+                        f"همه کلیدهای Gemini بن/نامعتبر شدن یا تموم شدن."
+                    ) from e
+                if self._is_model_unavailable_error(e):
+                    print(f"    [!] مدل موقتاً در دسترس نیست (۵۰۳/high demand). تست کلید بعدی...")
+                    if self._switch_to_next_key(reason="۵۰۳ UNAVAILABLE", cycle=True):
+                        time.sleep(min(delay, 5))
+                        continue
+                    print(f"    [!] فقط یک کلید موجوده و ۵۰۳ گرفت؛ کمی صبر و تلاش مجدد...")
             except Exception as e:
                 last_err = e
+                if self._is_model_unavailable_error(e):
+                    print(f"    [!] خطای در دسترس نبودن مدل. تست کلید بعدی...")
+                    if self._switch_to_next_key(reason="UNAVAILABLE", cycle=True):
+                        time.sleep(min(delay, 5))
+                        continue
+                if self._is_banned_or_invalid_key_error(e):
+                    if self._remove_current_key_and_switch(reason=str(e)[:120]):
+                        continue
 
             print(f"    [!] تلاش {attempt}/{self.max_retries} برای ترجمه ناموفق بود: {last_err}")
             if attempt < self.max_retries:
