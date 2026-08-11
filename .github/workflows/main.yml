@@ -32,9 +32,10 @@ on:
       output_format:
         description: "فرمت خروجی"
         required: false
-        default: "pdf"
+        default: "html"
         type: choice
         options:
+          - html
           - pdf
           - zip
 
