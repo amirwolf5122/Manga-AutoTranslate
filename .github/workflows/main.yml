@@ -32,11 +32,11 @@ on:
       output_format:
         description: "فرمت خروجی"
         required: false
-        default: "html"
+        default: "pdf"
         type: choice
         options:
-          - html
           - pdf
+          - html
           - zip
 
 jobs:
@@ -87,7 +87,7 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
         run: |
-          OUTPUT="output_fa.${{ inputs.output_format }}"
+          OUTPUT=".${{ inputs.output_format }}"
           echo "OUTPUT=$OUTPUT" >> $GITHUB_ENV
 
           python manga_translator.py \
