@@ -45,20 +45,40 @@
 2. همه سلول‌ها را با **Run all** اجرا کنید.
 
 ---
-
 ### ۲) اجرا با GitHub Actions (بدون نصب)
 
-#### نحوه استفاده:
-مهم: یک نسخه [fork](https://github.com/amirwolf5122/Manga-AutoTranslate/fork) جدا ایجاد کنید
+#### قدم اول — Fork
+یک نسخه [fork](https://github.com/amirwolf5122/Manga-AutoTranslate/fork) جدا از ریپو بساز.
+
+#### قدم دوم — گذاشتن کلید Gemini (مهم)
+1. برو به ریپوی **fork** خودت  
+2. **Settings** → **Secrets and variables** → **Actions**  
+3. روی **New repository secret** بزن  
+4. این مقادیر را وارد کن:
+   - **Name:** `GEMINI_API_KEY`
+   - **Secret:** کلید(های) Gemini — اگر چند تا داری با کاما جدا کن  
+     مثال: `key1,key2,key3`
+5. **Add secret** را بزن
+
+> اگر Secret را نسازی، workflow با خطای «Secret با نام GEMINI_API_KEY تنظیم نشده» متوقف می‌شود.
+
+#### قدم سوم — اجرای workflow
 1. برو به تب **Actions**
-2. یکی از workflowها را انتخاب کن
+2. workflow مربوط به ترجمه را انتخاب کن
 3. روی **Run workflow** بزن
-4. فیلدهای لازم را پر کن (لینک یا فایل + کلید Gemini)
-5. بعد از اتمام، از قسمت **Artifacts<=Summary** فایل ترجمه‌شده را دانلود کن
+4. فقط این فیلدها را پر کن:
+   - لینک / مسیر ورودی
+   - زبان OCR (اختیاری)
+   - مدل Gemini (اختیاری)
+   - ترتیب خواندن (rtl / ltr)
+   - فرمت خروجی (pdf / html / zip)
+5. بعد از اتمام، از قسمت **Artifacts** فایل ترجمه‌شده را دانلود کن  
+   (اسم artifact همان نام فصل است، نه `translated-manga`)
 
 **نکات:**
 - چون runnerهای GitHub GPU ندارند، پردازش روی CPU انجام می‌شود و نسبت به Colab کندتر است.
 - برای فصل‌های خیلی بزرگ ممکن است به timeout برخورد کنید (حداکثر ۶ ساعت).
+- کلید API در لاگ و صفحه Inputs دیده نمی‌شود (امن است).
 
 ---
 
