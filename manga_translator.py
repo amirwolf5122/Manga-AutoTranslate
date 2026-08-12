@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import glob
 import shutil
@@ -1121,6 +1122,104 @@ class MangaTranslator:
         return url
 
     @staticmethod
+    def _is_junk_image_url(u: str) -> bool:
+        low = u.lower()
+        junk_parts = (
+            "logo", "loading", "spinner", "placeholder", "avatar", "icon",
+            "credits", "credit-", "watermark", "banner", "ads/", "/ad.",
+            "radio", "vline", "favicon", "sprite", "emoji", "badge",
+            "/static/", "data:image", ".svg", "tracking", "pixel",
+            "1x1", "blank.", "transparent", "spacer",
+        )
+        if any(p in low for p in junk_parts):
+            return True
+        path = low.split("?")[0]
+        if path.endswith((".js", ".css", ".html", ".php", ".json", ".xml")):
+            return True
+        return False
+
+    @staticmethod
+    def _extract_src_candidates(img_tag) -> List[str]:
+        attrs = (
+            "src", "data-src", "data-original", "data-lazy-src", "data-lazy",
+            "data-url", "data-image", "data-full", "data-srcset", "srcset",
+            "data-pagespeed-lazy-src", "data-orig-src",
+        )
+        found = []
+        for a in attrs:
+            val = img_tag.get(a)
+            if not val:
+                continue
+            if "srcset" in a:
+                for part in val.split(","):
+                    part = part.strip().split()[0] if part.strip() else ""
+                    if part:
+                        found.append(part)
+            else:
+                found.append(val)
+        return found
+
+    @staticmethod
+    def _natural_sort_key(path: str):
+        name = os.path.basename(path)
+        return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", name)]
+
+    @staticmethod
+    def _try_extend_sequential(urls: List[str], headers: dict, max_extra: int = 80) -> List[str]:
+        import requests
+
+        if len(urls) < 2:
+            return urls
+
+        pattern = re.compile(
+            r"^(?P<prefix>.+/)(?P<num>\d+)(?P<suffix>\.(?:jpe?g|png|webp|gif))(?:\?.*)?$",
+            re.I,
+        )
+        parsed = []
+        for u in urls:
+            m = pattern.match(u.split("?")[0])
+            if m:
+                parsed.append((int(m.group("num")), m.group("prefix"), m.group("suffix"), u))
+
+        if len(parsed) < 2:
+            return urls
+
+        parsed.sort(key=lambda x: x[0])
+        nums = [p[0] for p in parsed]
+        if nums[-1] - nums[0] + 1 > len(nums) * 2:
+            return urls
+
+        prefix, suffix = parsed[0][1], parsed[0][2]
+        if not all(p[1] == prefix and p[2].lower() == suffix.lower() for p in parsed):
+            return urls
+
+        end = max(nums)
+        existing = set(nums)
+        extra = []
+        consecutive_fail = 0
+        for n in range(end + 1, end + 1 + max_extra):
+            if n in existing:
+                consecutive_fail = 0
+                continue
+            candidate = f"{prefix}{n}{suffix}"
+            try:
+                r = requests.head(candidate, headers=headers, timeout=12, allow_redirects=True)
+                if r.status_code == 200 and (r.headers.get("Content-Type") or "").startswith("image/"):
+                    extra.append(candidate)
+                    consecutive_fail = 0
+                else:
+                    consecutive_fail += 1
+            except Exception:
+                consecutive_fail += 1
+            if consecutive_fail >= 3:
+                break
+
+        if extra:
+            print(f"    [+] {len(extra)} تصویر اضافی با الگوی شماره‌ای پیدا شد.")
+            return urls + extra
+        return urls
+
+    @staticmethod
     def _download_images_from_url(url: str, dest_dir: str) -> List[str]:
         import requests
         from bs4 import BeautifulSoup
@@ -1132,7 +1231,10 @@ class MangaTranslator:
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
                 "Chrome/120.0.0.0 Safari/537.36"
-            )
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": url,
         }
         url = MangaTranslator._normalize_image_url(url)
 
@@ -1150,8 +1252,16 @@ class MangaTranslator:
             out_file = os.path.join(dest_dir, f"page_{index:03d}{ext}")
             with open(out_file, "wb") as f:
                 f.write(content)
-            test_img = cv2.imread(out_file)
-            if test_img is None or min(test_img.shape[:2]) < 50:
+            arr = np.frombuffer(content, dtype=np.uint8)
+            test_img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if test_img is None:
+                try:
+                    os.remove(out_file)
+                except OSError:
+                    pass
+                return None
+            h, w = test_img.shape[:2]
+            if min(h, w) < 80 or max(h, w) < 200:
                 try:
                     os.remove(out_file)
                 except OSError:
@@ -1178,29 +1288,101 @@ class MangaTranslator:
 
         soup = BeautifulSoup(resp.content, "html.parser")
         img_urls, seen = [], set()
+
         for img in soup.find_all("img"):
-            src = img.get("src") or img.get("data-src") or img.get("data-original") or img.get("data-lazy-src")
-            if not src:
-                continue
-            full_url = MangaTranslator._normalize_image_url(urljoin(url, src))
-            if full_url not in seen:
+            for src in MangaTranslator._extract_src_candidates(img):
+                if not src or src.startswith("data:"):
+                    continue
+                full_url = MangaTranslator._normalize_image_url(urljoin(url, src))
+                if full_url in seen:
+                    continue
+                if MangaTranslator._is_junk_image_url(full_url):
+                    continue
                 seen.add(full_url)
                 img_urls.append(full_url)
 
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            low = href.lower().split("?")[0]
+            if any(low.endswith(e) for e in (".jpg", ".jpeg", ".png", ".webp")):
+                full_url = MangaTranslator._normalize_image_url(urljoin(url, href))
+                if full_url not in seen and not MangaTranslator._is_junk_image_url(full_url):
+                    seen.add(full_url)
+                    img_urls.append(full_url)
+
+        if not img_urls:
+            print("    [!] هیچ تگ تصویری معتبری در صفحه پیدا نشد.")
+            return []
+
+        img_urls = MangaTranslator._try_extend_sequential(img_urls, headers)
+
+        def _priority(u: str) -> int:
+            low = u.lower()
+            if any(k in low for k in ("/chapter", "/chapters/", "/comic/", "/manga/", "/pages/")):
+                return 0
+            if re.search(r"/\d+\.(jpe?g|png|webp)$", low):
+                return 1
+            return 2
+
+        img_urls = sorted(set(img_urls), key=lambda u: (_priority(u), u))
+
         saved = []
-        for i, img_url in enumerate(img_urls):
+        for img_url in img_urls:
             try:
                 r = requests.get(img_url, headers=headers, timeout=60)
                 r.raise_for_status()
             except Exception as e:
-                print(f"    [!] رد شد ({img_url}): {e}")
+                print(f"    [!] رد شد ({img_url[:90]}…): {e}")
                 continue
             path = _save_bytes(r.content, len(saved) + 1, img_url)
             if path:
                 saved.append(path)
 
+        saved = sorted(saved, key=MangaTranslator._natural_sort_key)
         print(f"    {len(saved)} تصویر از {url} دانلود شد.")
-        return sorted(saved)
+        return saved
+
+    @staticmethod
+    def _auto_output_path(input_path: str, output_spec: str) -> str:
+        spec = (output_spec or "").strip()
+        is_ext_only = (
+            spec.startswith(".")
+            and "/" not in spec
+            and "\\" not in spec
+            and re.fullmatch(r"\.(pdf|zip|html)", spec, re.I) is not None
+        )
+        if not is_ext_only:
+            return output_spec
+
+        ext = spec.lower()
+        if MangaTranslator._is_url(input_path):
+            from urllib.parse import urlparse, unquote
+            path = unquote(urlparse(input_path).path).strip("/")
+            parts = [p for p in path.split("/") if p]
+            base = "chapter"
+            if not parts:
+                base = "chapter"
+            elif "chapter" in [p.lower() for p in parts]:
+                low_parts = [p.lower() for p in parts]
+                try:
+                    idx = low_parts.index("chapter")
+                    name = parts[idx - 1] if idx > 0 else "chapter"
+                    num = parts[idx + 1] if idx + 1 < len(parts) else ""
+                    num = re.sub(r"[^\w\-]", "", num.split("?")[0])
+                    base = f"{name}-{num}" if num else name
+                except ValueError:
+                    base = parts[-1]
+            else:
+                base = parts[-1]
+            base = re.sub(r"[^\w\-.]+", "-", base).strip("-._")
+            if not base:
+                base = "chapter"
+        else:
+            raw = input_path.rstrip("/\\")
+            base = os.path.splitext(os.path.basename(raw))[0] or "output"
+            base = re.sub(r"[^\w\-.]+", "-", base).strip("-._") or "output"
+
+        return base + ext
 
     @staticmethod
     def _extract_zip(zip_path: str, dest_dir: str) -> List[str]:
@@ -1429,7 +1611,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="مترجم خودکار مانگا با OCR + Gemini")
     p.add_argument("-i", "--input", required=True)
     p.add_argument("-o", "--output", required=True,
-                   help="مسیر خروجی: پوشه، .pdf، .zip، .html یا یک فایل تصویر")
+                   help="مسیر خروجی: پوشه، فایل کامل، یا فقط پسوند (.pdf / .zip / .html) "
+                        "که در این صورت نام از روی ورودی ساخته می‌شود")
     p.add_argument("--api-key", action="append", default=None,
                    help="کلید Gemini API. می‌تونی چند بار بنویسی یا با کاما جدا کنی. "
                         "اگه یکی تموم شد خودکار می‌ره بعدی. "
@@ -1494,6 +1677,10 @@ def main():
         print("خطا: حداقل یک کلید Gemini API لازم است (--api-key یا GEMINI_API_KEY).", file=sys.stderr)
         sys.exit(1)
 
+    output_path = MangaTranslator._auto_output_path(args.input, args.output)
+    if output_path != args.output:
+        print(f"[*] نام خروجی خودکار: {output_path}")
+
     translator = MangaTranslator(
         gemini_api_key=unique_keys,
         ocr_langs=args.ocr_lang,
@@ -1516,7 +1703,7 @@ def main():
         translation_temperature=args.temperature,
         max_output_width=(args.max_width or None),
     )
-    translator.run(args.input, args.output, resume=not args.no_resume)
+    translator.run(args.input, output_path, resume=not args.no_resume)
 
 
 if __name__ == "__main__":
