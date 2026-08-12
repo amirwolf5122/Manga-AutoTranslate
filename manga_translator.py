@@ -1452,7 +1452,7 @@ class MangaTranslator:
             for name in names:
                 if os.path.splitext(name)[1].lower() in IMAGE_EXTS:
                     files.append(os.path.join(root, name))
-        return sorted(files)
+        return sorted(files, key=MangaTranslator._natural_sort_key)
 
     @staticmethod
     def _pdf_to_images(pdf_path: str, dest_dir: str) -> List[str]:
@@ -1482,7 +1482,7 @@ class MangaTranslator:
     def _save_as_zip(folder: str, out_path: str) -> None:
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-            for name in sorted(os.listdir(folder)):
+            for name in sorted(os.listdir(folder), key=MangaTranslator._natural_sort_key):
                 zf.write(os.path.join(folder, name), arcname=name)
 
     def _write_image(self, image: np.ndarray, path: str) -> None:
@@ -1651,8 +1651,9 @@ html, body { background: #0a0a0b; }
             image_files = self._pdf_to_images(input_path, src_dir)
         elif os.path.isdir(input_path):
             image_files = sorted(
-                f for f in glob.glob(os.path.join(input_path, "*"))
-                if os.path.splitext(f)[1].lower() in IMAGE_EXTS
+                (f for f in glob.glob(os.path.join(input_path, "*"))
+                 if os.path.splitext(f)[1].lower() in IMAGE_EXTS),
+                key=MangaTranslator._natural_sort_key,
             )
         elif os.path.isfile(input_path) and os.path.splitext(input_path)[1].lower() in IMAGE_EXTS:
             image_files = [input_path]
