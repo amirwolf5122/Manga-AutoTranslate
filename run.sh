@@ -142,13 +142,15 @@ echo ""
 
 echo "فرمت خروجی:"
 echo " 1) pdf"
-echo " 2) zip"
+echo " 2) html"
+echo " 3) zip"
 read -p "انتخاب [پیش‌فرض 1]: " out_choice
 out_choice=${out_choice:-1}
 case $out_choice in
-    1) OUTPUT="output_pages_fa.pdf" ;;
-    2) OUTPUT="output_pages_fa.zip" ;;
-    *) OUTPUT="output_pages_fa.pdf" ;;
+    1) OUTPUT=".pdf" ;;
+    2) OUTPUT=".html" ;;
+    3) OUTPUT=".zip" ;;
+    *) OUTPUT=".pdf" ;;
 esac
 echo "خروجی: $OUTPUT"
 echo ""
