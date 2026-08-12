@@ -23,6 +23,9 @@ import cv2
 from PIL import Image, ImageDraw, ImageFont
 import random
 
+os.environ.setdefault("FLAGS_use_mkldnn", "0")
+os.environ.setdefault("FLAGS_onednn", "0")
+
 try:
     import arabic_reshaper
     from bidi.algorithm import get_display
@@ -169,7 +172,7 @@ class MangaTranslator:
         chunk_overlap: int = 300,
         img_format: str = "jpg",
         img_quality: int = 80,
-        max_workers: int = 2,
+        max_workers: int = 1,
         mag_ratio: float = 1.35,
         translation_temperature: float = 0.55,
         two_pass_ocr: bool = True,
@@ -199,7 +202,7 @@ class MangaTranslator:
         self.chunk_overlap = chunk_overlap
         self.img_format = img_format
         self.img_quality = img_quality
-        self.max_workers = max_workers
+        self.max_workers = max(1, int(max_workers))
         self.mag_ratio = mag_ratio
         self.translation_temperature = translation_temperature
         self.two_pass_ocr = two_pass_ocr
@@ -263,10 +266,8 @@ class MangaTranslator:
 
         device = "gpu" if ocr_gpu else "cpu"
 
-        self.ocr = PaddleOCR(
-            use_textline_orientation=True,
+        ocr_kwargs = dict(
             lang=main_lang,
-            device=device,
             show_log=False,
             text_det_thresh=0.3,
             text_det_box_thresh=0.5,
@@ -277,7 +278,38 @@ class MangaTranslator:
             max_batch_size=1,
             use_dilation=False,
         )
-        print(f"[*] مدل PaddleOCR با زبان '{main_lang}' و دستگاه '{device}' بارگذاری شد.")
+
+        try:
+            self.ocr = PaddleOCR(
+                use_textline_orientation=True,
+                device=device,
+                enable_mkldnn=False,
+                **ocr_kwargs,
+            )
+        except TypeError:
+            try:
+                self.ocr = PaddleOCR(
+                    use_angle_cls=True,
+                    use_gpu=ocr_gpu,
+                    enable_mkldnn=False,
+                    **ocr_kwargs,
+                )
+            except TypeError:
+                try:
+                    self.ocr = PaddleOCR(
+                        use_textline_orientation=True,
+                        device=device,
+                        **ocr_kwargs,
+                    )
+                except TypeError:
+                    self.ocr = PaddleOCR(
+                        use_angle_cls=True,
+                        use_gpu=ocr_gpu,
+                        **ocr_kwargs,
+                    )
+
+        print(f"[*] مدل PaddleOCR با زبان '{main_lang}' و دستگاه '{device}' بارگذاری شد "
+              f"(MKLDNN خاموش، workers={self.max_workers}).")
 
         self.client = genai.Client(api_key=self._api_keys[0])
         if len(self._api_keys) > 1:
@@ -376,8 +408,29 @@ class MangaTranslator:
         return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
 
     def detect_text(self, image: np.ndarray) -> List[dict]:
+        results = None
         with self._ocr_lock:
-            results = self.ocr.ocr(image)
+            last_err = None
+            for attempt in range(3):
+                try:
+                    results = self.ocr.ocr(image)
+                    break
+                except RuntimeError as e:
+                    last_err = e
+                    msg = str(e).lower()
+                    if "could not execute a primitive" in msg or "could not create a primitive" in msg:
+                        print(f"    [!] OneDNN/primitive crash (تلاش {attempt + 1}/3)...")
+                        time.sleep(0.4 * (attempt + 1))
+                        continue
+                    raise
+                except Exception as e:
+                    last_err = e
+                    if attempt < 2:
+                        time.sleep(0.3)
+                        continue
+                    raise
+            if results is None and last_err is not None:
+                raise last_err
 
         detections = []
         if results and results[0]:
@@ -1000,7 +1053,7 @@ class MangaTranslator:
 
     def _process_chunk_worker(self, args_tuple) -> List[TextRegion]:
         idx, y0, y1, image = args_tuple
-        print(f"    [>] OCR موازی تیکه‌ی {idx + 1} (ردیف {y0} تا {y1})")
+        print(f"    [>] OCR تیکه‌ی {idx + 1} (ردیف {y0} تا {y1})")
         piece = image[y0:y1, :]
 
         detections = self.detect_text(piece)
@@ -1036,10 +1089,15 @@ class MangaTranslator:
         all_raw_regions: List[TextRegion] = []
 
         tasks = [(i, r[0], r[1], image) for i, r in enumerate(chunk_ranges)]
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            results = executor.map(self._process_chunk_worker, tasks)
-            for res in results:
-                all_raw_regions.extend(res)
+
+        if self.max_workers <= 1 or len(tasks) <= 1:
+            for t in tasks:
+                all_raw_regions.extend(self._process_chunk_worker(t))
+        else:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                results = executor.map(self._process_chunk_worker, tasks)
+                for res in results:
+                    all_raw_regions.extend(res)
 
         unique_regions = self._deduplicate_regions(all_raw_regions)
         if self.reading_order == "rtl":
@@ -1513,7 +1571,67 @@ html, body { background: #0a0a0b; }
         with open(out_path, "w", encoding="utf-8") as f:
             f.write("\n".join(parts))
 
-    def run(self, input_path: str, output_path: str, resume: bool = True) -> None:
+    @staticmethod
+    def _cleanup_previous_artifacts(output_path: str, keep_outputs: bool = False) -> None:
+        abs_out = os.path.abspath(output_path)
+        parent = os.path.dirname(abs_out) or "."
+        current_base = os.path.basename(abs_out)
+        current_cache = abs_out + ".cache"
+        current_stem = os.path.splitext(current_base)[0]
+
+        if not os.path.isdir(parent):
+            return
+
+        series_prefix = current_stem
+        for marker in ("-chapter-", "_chapter_", "-ch-", "_ch-"):
+            if marker in current_stem.lower():
+                idx = current_stem.lower().index(marker)
+                series_prefix = current_stem[:idx]
+                break
+        if len(series_prefix) < 3:
+            series_prefix = current_stem[: max(4, len(current_stem) // 2)]
+
+        removed = 0
+        for name in os.listdir(parent):
+            path = os.path.join(parent, name)
+
+            if name.endswith(".cache") and os.path.isdir(path):
+                if os.path.abspath(path) != os.path.abspath(current_cache):
+                    print(f"[*] پاک کردن کش قدیمی: {name}")
+                    shutil.rmtree(path, ignore_errors=True)
+                    removed += 1
+                continue
+
+            if keep_outputs:
+                continue
+
+            low = name.lower()
+            if not low.endswith((".pdf", ".html", ".zip")):
+                continue
+            if os.path.abspath(path) == abs_out:
+                continue
+            if not os.path.isfile(path):
+                continue
+
+            stem = os.path.splitext(name)[0]
+            if series_prefix and series_prefix.lower() in stem.lower():
+                try:
+                    print(f"[*] پاک کردن خروجی قدیمی: {name}")
+                    os.remove(path)
+                    removed += 1
+                except OSError as e:
+                    print(f"    [!] نتوانست پاک شود ({name}): {e}")
+
+        if removed:
+            print(f"[*] {removed} مورد قدیمی پاک شد.")
+        else:
+            print("[*] مورد قدیمی برای پاک کردن پیدا نشد.")
+
+    def run(self, input_path: str, output_path: str, resume: bool = True,
+            clean_old: bool = True) -> None:
+        if clean_old:
+            self._cleanup_previous_artifacts(output_path, keep_outputs=False)
+
         cache_dir = output_path + ".cache"
         if not resume:
             shutil.rmtree(cache_dir, ignore_errors=True)
@@ -1630,6 +1748,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--cpu", dest="gpu", action="store_false",
                    help="اجبار به استفاده از CPU حتی اگه GPU در دسترس باشه")
     p.add_argument("--no-resume", action="store_true")
+    p.add_argument("--keep-old", action="store_true",
+                   help="کش و خروجی فصل‌های قبلی را پاک نکن (پیش‌فرض: پاک می‌شوند)")
     p.add_argument("--request-delay", type=float, default=0.0)
     p.add_argument("--max-retries", type=int, default=4)
     p.add_argument("--max-chunk-height", type=int, default=3600)
@@ -1640,7 +1760,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="عرض ثابت همه تصاویر خروجی (پیکسل). پیش‌فرض ۹۰۰. "
                         "برای غیرفعال کردن: --max-width 0")
     p.add_argument("--min-confidence", type=float, default=0.12)
-    p.add_argument("--workers", type=int, default=2, help="تعداد تیکه‌های موازی برای OCR (پیش‌فرض: ۲)")
+    p.add_argument("--workers", type=int, default=1,
+                   help="تعداد تیکه‌های موازی برای OCR (پیش‌فرض: ۱ برای پایداری روی CPU)")
     p.add_argument("--mask-padding", type=int, default=3,
                    help="حداقل حاشیه‌ی ثابت (پیکسل) دور حروف هنگام پاک‌سازی")
     p.add_argument("--pad-ratio", type=float, default=0.06,
@@ -1703,7 +1824,12 @@ def main():
         translation_temperature=args.temperature,
         max_output_width=(args.max_width or None),
     )
-    translator.run(args.input, output_path, resume=not args.no_resume)
+    translator.run(
+        args.input,
+        output_path,
+        resume=not args.no_resume,
+        clean_old=not args.keep_old,
+    )
 
 
 if __name__ == "__main__":
