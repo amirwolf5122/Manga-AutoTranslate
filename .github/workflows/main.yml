@@ -7,10 +7,6 @@ on:
         description: "لینک ورودی (صفحه مانگا / ZIP / PDF / تصویر)"
         required: true
         type: string
-      gemini_api_key:
-        description: "کلید Gemini ai:  key1,key2"
-        required: true
-        type: string
       ocr_lang:
         description: "زبان OCR (مثلاً en یا ko en یا ja en)"
         required: false
@@ -43,7 +39,6 @@ jobs:
   translate:
     runs-on: ubuntu-latest
     timeout-minutes: 360
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -67,28 +62,30 @@ jobs:
           opencv-python==4.8.1.78
           opencv-contrib-python==4.8.1.78
           CONSTRAINTS
-
           pip install --no-cache-dir --constraint constraints.txt numpy==1.26.4
           pip install --no-cache-dir --constraint constraints.txt opencv-python-headless==4.8.1.78
           pip install --no-cache-dir --no-deps --constraint constraints.txt paddlepaddle==2.6.2 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
           pip install --no-cache-dir --no-deps --constraint constraints.txt paddleocr==2.7.0.3
           pip install --no-cache-dir --constraint constraints.txt pymupdf
           pip install --no-cache-dir --constraint constraints.txt attrdict cython fire lxml openpyxl pdf2docx premailer python-docx visualdl
-          pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4 google-genai decorator imgaug opt-einsum astor pyyaml imgaug simple-lama-inpainting
+          pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4 google-genai decorator imgaug opt-einsum astor pyyaml simple-lama-inpainting
 
       - name: Download font
         run: |
           mkdir -p fonts
-          echo "Downloading Vazirmatn Bold..."
           curl -L -o fonts/Vazirmatn-Bold.ttf \
             "https://github.com/rastikerdar/vazirmatn/raw/master/fonts/ttf/Vazirmatn-Bold.ttf"
-          FONT_PATH="fonts/Vazirmatn-Bold.ttf"
-          echo "FONT_PATH=$FONT_PATH" >> $GITHUB_ENV
+          echo "FONT_PATH=fonts/Vazirmatn-Bold.ttf" >> $GITHUB_ENV
 
       - name: Run translator
         env:
-          GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
+          if [ -z "$GEMINI_API_KEY" ]; then
+            echo "خطا: Secret با نام GEMINI_API_KEY تنظیم نشده."
+            exit 1
+          fi
+
           OUT_EXT=".${{ inputs.output_format }}"
           echo "OUT_EXT=$OUT_EXT" >> $GITHUB_ENV
 
@@ -99,23 +96,24 @@ jobs:
             --ocr-lang ${{ inputs.ocr_lang }} \
             --model "${{ inputs.model }}" \
             --reading-order ${{ inputs.reading_order }} \
-            --cpu \
-            --api-key "$GEMINI_API_KEY"
+            --cpu
 
-          # پیدا کردن فایل واقعی خروجی (نام خودکار از روی URL)
           RESULT=$(ls -1t *"$OUT_EXT" 2>/dev/null | head -n 1 || true)
           if [ -z "$RESULT" ]; then
             echo "هیچ فایل خروجی با پسوند $OUT_EXT پیدا نشد."
             ls -la
             exit 1
           fi
+
+          STEM=$(basename "$RESULT" "$OUT_EXT")
           echo "RESULT_FILE=$RESULT" >> $GITHUB_ENV
+          echo "RESULT_STEM=$STEM" >> $GITHUB_ENV
           echo "خروجی نهایی: $RESULT"
 
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: translated-manga
+          name: ${{ env.RESULT_STEM }}
           path: ${{ env.RESULT_FILE }}
           retention-days: 7
           if-no-files-found: error
