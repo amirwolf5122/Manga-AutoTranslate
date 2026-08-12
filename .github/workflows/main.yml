@@ -52,20 +52,21 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install system dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev
-      - name: Install Python dependencies
 
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip setuptools wheel
-          cat > constraints.txt << EOF
+          cat > constraints.txt << 'CONSTRAINTS'
           numpy==1.26.4
           opencv-python-headless==4.8.1.78
           opencv-python==4.8.1.78
           opencv-contrib-python==4.8.1.78
-          EOF
+          CONSTRAINTS
 
           pip install --no-cache-dir --constraint constraints.txt numpy==1.26.4
           pip install --no-cache-dir --constraint constraints.txt opencv-python-headless==4.8.1.78
@@ -74,6 +75,7 @@ jobs:
           pip install --no-cache-dir --constraint constraints.txt pymupdf
           pip install --no-cache-dir --constraint constraints.txt attrdict cython fire lxml openpyxl pdf2docx premailer python-docx visualdl
           pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4 google-genai decorator imgaug opt-einsum astor pyyaml imgaug simple-lama-inpainting
+
       - name: Download font
         run: |
           mkdir -p fonts
@@ -87,12 +89,12 @@ jobs:
         env:
           GEMINI_API_KEY: ${{ inputs.gemini_api_key }}
         run: |
-          OUTPUT=".${{ inputs.output_format }}"
-          echo "OUTPUT=$OUTPUT" >> $GITHUB_ENV
+          OUT_EXT=".${{ inputs.output_format }}"
+          echo "OUT_EXT=$OUT_EXT" >> $GITHUB_ENV
 
           python manga_translator.py \
             -i "${{ inputs.input_url }}" \
-            -o "$OUTPUT" \
+            -o "$OUT_EXT" \
             --font "$FONT_PATH" \
             --ocr-lang ${{ inputs.ocr_lang }} \
             --model "${{ inputs.model }}" \
@@ -100,10 +102,20 @@ jobs:
             --cpu \
             --api-key "$GEMINI_API_KEY"
 
+          # پیدا کردن فایل واقعی خروجی (نام خودکار از روی URL)
+          RESULT=$(ls -1t *"$OUT_EXT" 2>/dev/null | head -n 1 || true)
+          if [ -z "$RESULT" ]; then
+            echo "هیچ فایل خروجی با پسوند $OUT_EXT پیدا نشد."
+            ls -la
+            exit 1
+          fi
+          echo "RESULT_FILE=$RESULT" >> $GITHUB_ENV
+          echo "خروجی نهایی: $RESULT"
+
       - name: Upload result
         uses: actions/upload-artifact@v4
         with:
           name: translated-manga
-          path: ${{ env.OUTPUT }}
+          path: ${{ env.RESULT_FILE }}
           retention-days: 7
-          if-no-files-found: warn
+          if-no-files-found: error
