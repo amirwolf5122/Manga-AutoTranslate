@@ -88,14 +88,14 @@ WATERMARK_PATTERNS = (
     "your support is needed", "community discord", "invite you", "we invite",
     "adaptation", "original", "redice", "redice studio", "leafsky",
     "wasakbasak", "wasak", "basak", "cho wooneh", "hermode", "dotori",
-    "asuracomic", "asuracomics", "discord.gg",
+    "asuracomic", "asuracomics", "discord.gg","likemanga.ink"
 )
 
 DOMAIN_TLDS = (
     "com", "org", "net", "io", "co", "me", "info", "xyz", "app", "dev",
     "site", "online", "web", "to", "tv", "cc", "biz", "us", "uk", "kr",
     "jp", "cn", "ru", "de", "fr", "es", "it", "pt", "br", "in", "id",
-    "gg", "ly", "link", "page", "club", "fun", "live", "news", "blog",
+    "gg", "ly", "link", "page", "club", "fun", "live", "news","ink", "blog",
 )
 
 DOMAIN_RE = re.compile(
