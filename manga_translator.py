@@ -516,7 +516,9 @@ class MangaTranslator:
                 if len(text) == 1 and text not in {"!", "?", "…"}:
                     continue
 
-                stripped = text.strip()
+                stripped = MangaTranslator._strip_watermarks(text.strip())
+                if not stripped:
+                    continue
                 kind = self._classify_text(stripped)
 
                 if kind == "junk" and len(re.sub(r"[^\w]", "", stripped)) <= 1:
@@ -524,7 +526,7 @@ class MangaTranslator:
 
                 detections.append({
                     "poly": poly,
-                    "text": text,
+                    "text": stripped,
                     "conf": conf,
                     "angle": angle,
                     "kind": kind,
@@ -532,8 +534,43 @@ class MangaTranslator:
         return detections
 
     @staticmethod
+    def _strip_watermarks(text: str) -> str:
+        if not text:
+            return text
+
+        cleaned = text
+
+        patterns = [
+            r"(?i)\s*likemanga\.?ink\s*",
+            r"(?i)\s*like\s*manga\.?ink\s*",
+            r"(?i)\s*asurascans?\s*",
+            r"(?i)\s*asura\s*scans?\s*",
+            r"(?i)\s*flamecomics?\s*",
+            r"(?i)\s*reaperscans?\s*",
+            r"(?i)\s*reaper\s*scans?\s*",
+            r"(?i)\s*lunatoons?\s*",
+            r"(?i)\s*nadeinkorea\s*",
+            r"(?i)\s*made\s*in\s*korea\s*",
+            r"(?i)\s*mangadex\s*",
+            r"(?i)\s*webtoon\s*",
+            r"(?i)\s*tappytoon\s*",
+            r"(?i)\s*toomics\s*",
+            r"(?i)\s*lezhin\s*",
+            r"(?i)\s*www\.[a-z0-9\-]+\.(com|net|org|ink|to|gg)\s*",
+            r"(?i)\s*[a-z0-9\-]+\.(com|net|org|ink|to|gg)\b\s*",
+            r"(?i)\s*discord\.gg/[a-z0-9\-]+\s*",
+        ]
+
+        for pat in patterns:
+            cleaned = re.sub(pat, " ", cleaned)
+
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        return cleaned
+
+
+    @staticmethod
     def _classify_text(text: str) -> str:
-        stripped = (text or "").strip()
+        stripped = MangaTranslator._strip_watermarks((text or "").strip())
         if not stripped:
             return "junk"
 
