@@ -76,45 +76,61 @@ class TextRegion:
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
 PUNCTUATION_SET = set(string.punctuation + "؟«»٪٫،؛…")
 
-
 WATERMARK_PATTERNS = (
     "lunatoons", "lunatoon", "nadeinkorea", "made in korea", "madeinkorea",
     "asurascans", "asura", "flamecomics", "reaper scans", "reaperscans",
     "mangadex", "webtoon", "tapas", "toomics", "lezhin", "tappytoon",
     "kaynscan", "kayn scan", "scar.com", "scarcom", "wanscan", "wan scan",
+    "vortexscans", "vortex scans", "vortexscan", "ikemanga", "likemanga",
+    "munpia", "nullscans", "luminous", "flame comics", "cosmic scans",
+    "asuracomic", "asuracomics", "discord.gg",
     "read this series", "readthis series", "read thisseries", "readthisseries",
     "series at", "seriesat", "support us", "to support", "supportus",
     "join our community", "discord server", "for the latest updates",
     "your support is needed", "community discord", "invite you", "we invite",
-    "adaptation", "original", "redice", "redice studio", "leafsky",
-    "wasakbasak", "wasak", "basak", "cho wooneh", "hermode", "dotori",
-    "asuracomic", "asuracomics", "discord.gg","likemanga.ink"
+    "this chapter was brought", "brought to you by", "show your support",
+    "dear readers", "happy reading", "dive deeper", "unlock up to",
+    "exclusively on", "storm at", "join the storm",
+    "redice studio", "redice", "leafsky", "wasakbasak", "wasak basak",
+    "cho wooneh", "hermode", "dotori", "3b2s",
 )
 
 DOMAIN_TLDS = (
-    "com", "org", "net", "io", "co", "me", "info", "xyz", "app", "dev",
-    "site", "online", "web", "to", "tv", "cc", "biz", "us", "uk", "kr",
-    "jp", "cn", "ru", "de", "fr", "es", "it", "pt", "br", "in", "id",
-    "gg", "ly", "link", "page", "club", "fun", "live", "news","ink", "blog",
+    "com", "org", "net", "io", "info", "xyz", "app", "dev",
+    "site", "online", "web", "biz", "us", "uk", "kr",
+    "jp", "cn", "ru", "de", "fr", "es", "pt", "br", "id",
+    "gg", "link", "page", "club", "fun", "live", "news", "blog",
+    "ink", "toon", "scans",
 )
 
 DOMAIN_RE = re.compile(
     r"(?i)\b(?:https?://|www\.)?"
-    r"[a-z0-9](?:[a-z0-9\-]{0,61}[a-z0-9])?"
+    r"[a-z0-9](?:[a-z0-9\-]{1,61}[a-z0-9])"
     r"\.(?:" + "|".join(DOMAIN_TLDS) + r")\b"
 )
 
 PROMO_RE = re.compile(
     r"(?i)("
     r"read\s*this\s*series|"
-    r"series\s*at|"
+    r"series\s*(first\s*)?at|"
     r"support\s*us|"
     r"to\s*support|"
+    r"show\s*your\s*support|"
+    r"brought\s*to\s*you|"
+    r"this\s*chapter\s*was\s*brought|"
+    r"dear\s*readers|"
+    r"happy\s*reading|"
+    r"dive\s*deeper|"
+    r"unlock\s*up\s*to|"
+    r"exclusively\s*on|"
+    r"vortex\s*scans?|"
+    r"ike\s*manga|"
+    r"like\s*manga|"
     r"kayn\s*scan|"
     r"scar\.?\s*com|"
     r"wan\s*scan|"
     r"discord\s*(server|\.gg)|"
-    r"join\s*(our|ou)\s*community|"
+    r"join\s*(our|ou|the)\s*(community|storm)|"
     r"latest\s*updates|"
     r"support\s*is\s*needed|"
     r"we\s*invite|"
@@ -122,7 +138,6 @@ PROMO_RE = re.compile(
     r"community\s*discord|"
     r"for\s*the\s*latest|"
     r"scan\s*\.?\s*com|"
-    r"\b(art|artist|author|writer|adaptation|original|studio|publisher|lettering)\b|"
     r"redice\s*studio|"
     r"wasak\s*basak|"
     r"leaf\s*sky|"
@@ -231,7 +246,7 @@ class MangaTranslator:
         inpaint_radius: int = 3,
         mask_padding: int = 3,
         pad_ratio: float = 0.06,
-        min_confidence: float = 0.08,
+        min_confidence: float = 0.12,
         max_retries: int = 4,
         request_delay: float = 0.0,
         max_chunk_height: int = 3600,
@@ -240,7 +255,7 @@ class MangaTranslator:
         img_quality: int = 80,
         max_workers: int = 1,
         mag_ratio: float = 1.35,
-        translation_temperature: float = 0.55,
+        translation_temperature: float = 0.85,
         two_pass_ocr: bool = True,
         max_output_width: Optional[int] = None
     ):
@@ -337,14 +352,14 @@ class MangaTranslator:
         ocr_kwargs = dict(
             lang=main_lang,
             show_log=False,
-            text_det_thresh=0.2,
-            text_det_box_thresh=0.4,
-            text_det_unclip_ratio=1.8,
-            det_db_thresh=0.2,
-            det_db_box_thresh=0.4,
-            det_db_unclip_ratio=1.8,
+            text_det_thresh=0.3,
+            text_det_box_thresh=0.5,
+            text_det_unclip_ratio=1.6,
+            det_db_thresh=0.3,
+            det_db_box_thresh=0.5,
+            det_db_unclip_ratio=1.6,
             max_batch_size=1,
-            use_dilation=True,
+            use_dilation=False,
         )
 
         try:
@@ -470,13 +485,10 @@ class MangaTranslator:
     def _clahe_enhance(image: np.ndarray) -> np.ndarray:
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
         l2 = clahe.apply(l)
         enhanced = cv2.merge((l2, a, b))
-        enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
-        blur = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
-        enhanced = cv2.addWeighted(enhanced, 1.4, blur, -0.4, 0)
-        return enhanced
+        return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
 
     def detect_text(self, image: np.ndarray) -> List[dict]:
         results = None
@@ -519,9 +531,7 @@ class MangaTranslator:
                 if len(text) == 1 and text not in {"!", "?", "…"}:
                     continue
 
-                stripped = MangaTranslator._strip_watermarks(text.strip())
-                if not stripped:
-                    continue
+                stripped = text.strip()
                 kind = self._classify_text(stripped)
 
                 if kind == "junk" and len(re.sub(r"[^\w]", "", stripped)) <= 1:
@@ -529,7 +539,7 @@ class MangaTranslator:
 
                 detections.append({
                     "poly": poly,
-                    "text": stripped,
+                    "text": text,
                     "conf": conf,
                     "angle": angle,
                     "kind": kind,
@@ -537,43 +547,8 @@ class MangaTranslator:
         return detections
 
     @staticmethod
-    def _strip_watermarks(text: str) -> str:
-        if not text:
-            return text
-
-        cleaned = text
-
-        patterns = [
-            r"(?i)\s*likemanga\.?ink\s*",
-            r"(?i)\s*like\s*manga\.?ink\s*",
-            r"(?i)\s*asurascans?\s*",
-            r"(?i)\s*asura\s*scans?\s*",
-            r"(?i)\s*flamecomics?\s*",
-            r"(?i)\s*reaperscans?\s*",
-            r"(?i)\s*reaper\s*scans?\s*",
-            r"(?i)\s*lunatoons?\s*",
-            r"(?i)\s*nadeinkorea\s*",
-            r"(?i)\s*made\s*in\s*korea\s*",
-            r"(?i)\s*mangadex\s*",
-            r"(?i)\s*webtoon\s*",
-            r"(?i)\s*tappytoon\s*",
-            r"(?i)\s*toomics\s*",
-            r"(?i)\s*lezhin\s*",
-            r"(?i)\s*www\.[a-z0-9\-]+\.(com|net|org|ink|to|gg)\s*",
-            r"(?i)\s*[a-z0-9\-]+\.(com|net|org|ink|to|gg)\b\s*",
-            r"(?i)\s*discord\.gg/[a-z0-9\-]+\s*",
-        ]
-
-        for pat in patterns:
-            cleaned = re.sub(pat, " ", cleaned)
-
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
-        return cleaned
-
-
-    @staticmethod
     def _classify_text(text: str) -> str:
-        stripped = MangaTranslator._strip_watermarks((text or "").strip())
+        stripped = (text or "").strip()
         if not stripped:
             return "junk"
 
@@ -594,12 +569,16 @@ class MangaTranslator:
         if len(alpha_only) <= 2 and len(stripped) <= 5 and not any(c.isalpha() and c.isascii() for c in stripped if len(stripped) > 3):
             return "junk"
 
-        title_pats = getattr(MangaTranslator, "_title_skip_patterns", None) or []
-        for pat in title_pats:
-            if not pat or len(pat) < 5:
-                continue
-            if pat in low_compact and len(low_compact) <= max(28, len(pat) + 6):
-                return "promo"
+        if getattr(MangaTranslator, "_title_skip_enabled", False):
+            title_pats = getattr(MangaTranslator, "_title_skip_patterns", None) or []
+            for pat in title_pats:
+                if not pat or len(pat) < 6:
+                    continue
+                if pat not in low_compact:
+                    continue
+                remainder = low_compact.replace(pat, "")
+                if len(remainder) <= 6 and len(low_compact) <= 40:
+                    return "promo"
 
         if any(w.replace(" ", "") in low_compact for w in WATERMARK_PATTERNS):
             return "promo"
@@ -607,14 +586,19 @@ class MangaTranslator:
             return "promo"
         if DOMAIN_RE.search(stripped):
             return "promo"
-        if low_compact in {"org", "com", "net", "www", "http", "https", "wwwcom", "wwworg", "comto"}:
+        if low_compact in {
+            "org", "com", "net", "www", "http", "https", "wwwcom", "wwworg",
+            "comto", "ink", "scans", "scan", "asura", "asuras", "asuran",
+        }:
             return "promo"
-        if re.fullmatch(r"(?i)[a-z0-9\-]+\.(?:" + "|".join(DOMAIN_TLDS) + r")e?", stripped):
+        if re.fullmatch(r"(?i)[a-z0-9\-]+\.(?:" + "|".join(DOMAIN_TLDS) + r")[a-z]{0,3}", stripped):
             return "promo"
-        if re.search(r"(?i)\.(?:com|org|net|io)\b", stripped):
+        if re.search(r"(?i)\.(?:com|org|net|io|ink)\b", stripped):
             return "promo"
-        if low_compact.endswith(("com", "org", "net")) and (
-            len(stripped) <= 24 or "scan" in low_compact or "series" in low_full
+        if re.search(r"(?i)(like|ike|vortex|kayn|asura|reaper)?manga[.\s]?(ink|unk|com|org)?", stripped) and len(stripped) <= 24:
+            return "promo"
+        if low_compact.endswith(("com", "org", "net", "ink", "unk")) and (
+            len(stripped) <= 28 or "scan" in low_compact or "manga" in low_compact or "series" in low_full
         ):
             return "promo"
 
@@ -644,6 +628,7 @@ class MangaTranslator:
             if stripped not in dialogue_short:
                 return "sfx"
 
+        
         if len(alpha_only) <= 2 and len(stripped) <= 4:
             return "junk"
 
@@ -762,11 +747,9 @@ class MangaTranslator:
             angles = [detections[i].get("angle", 0.0) for i in idxs_sorted if i < len(detections)]
             avg_angle = float(np.mean(angles)) if angles else 0.0
 
-            kinds = [detections[i].get("kind", "dialogue") for i in idxs_sorted if i < len(detections)]
-            if "promo" in kinds:
-                region_kind = "promo"
-            else:
-                region_kind = MangaTranslator._classify_text(text)
+            
+            
+            region_kind = MangaTranslator._classify_text(text)
 
             regions.append(
                 TextRegion(
@@ -841,10 +824,7 @@ class MangaTranslator:
                         x1 = max(u.rect[0] + u.rect[2], r.rect[0] + r.rect[2])
                         y1 = max(u.rect[1] + u.rect[3], r.rect[1] + r.rect[3])
                         u.rect = (x0, y0, x1 - x0, y1 - y0)
-                    if u.kind == "promo" or r.kind == "promo":
-                        u.kind = "promo"
-                    else:
-                        u.kind = MangaTranslator._classify_text(u.source_text)
+                    u.kind = MangaTranslator._classify_text(u.source_text)
                     break
             if not is_dup:
                 unique.append(r)
@@ -859,6 +839,7 @@ class MangaTranslator:
             for poly in region.boxes:
                 pts = np.array(poly, np.int32).reshape((-1, 1, 2))
                 cv2.fillPoly(text_mask, [pts], 255)
+                
                 if getattr(region, "kind", "dialogue") in ("promo", "sfx"):
                     cv2.fillPoly(promo_mask, [pts], 255)
 
@@ -875,6 +856,7 @@ class MangaTranslator:
 
         full_target_mask = cv2.bitwise_or(text_mask, purple_around_text)
 
+        
         if np.any(promo_mask):
             promo_dilated = cv2.dilate(
                 promo_mask,
@@ -929,25 +911,13 @@ class MangaTranslator:
         payload = [{"id": r.id, "text": r.source_text} for r in regions]
 
         system_instruction = (
-            "تو مترجم مانهوا هستی. باید دیالوگ‌ها رو جوری بنویسی که انگار دو نفر دارن "
-            "تو زندگی واقعی یا تو گیم با هم حرف می‌زنن — کاملاً امروزی، خودمونی و طبیعی.\n\n"
-
-            "قانون اصلی:\n"
-            "اگر جمله‌ات حس کتاب، دوبله قدیمی، ادبی یا ترجمه‌ی ماشینی بده، باید کامل عوضش کنی.\n\n"
-
-            "بعد از ترجمهٔ هر خط این سه سؤال رو از خودت بپرس:\n"
-            "1. یه آدم عادی امروزی اینجوری حرف می‌زنه؟\n"
-            "2. بوی کتاب یا ترجمه می‌ده؟\n"
-            "3. می‌تونم خودمونی‌تر، کوتاه‌تر و طبیعی‌ترش کنم؟\n"
-            "اگر جواب حتی یکی منفی بود، دوباره بنویس.\n\n"
-
-            "قوانین اجباری:\n"
-            "• فقط فارسی محاوره‌ای و امروزی بنویس. از کلمات و ساختارهای کتابی، ادبی یا رسمی پرهیز کن.\n"
-            "• جمله‌ها کوتاه، شکسته و طبیعی باشن.\n"
-            "• فحش و تندی متن اصلی رو کامل و بدون سانسور نگه دار.\n"
-            "• لکنت و تردید رو طبیعی بنویس (مـ... من...).\n"
-            "• اسامی خاص رو ترجمه نکن، فقط نویسه‌گردانی ثابت کن و توی فیلد names برگردون.\n"
-            "• خروجی فقط JSON معتبر باشه. هیچ توضیح اضافه‌ای ننویس."
+            "دیالوگ مانهوا رو فارسیِ کوچه‌بازار بنویس؛ مثل حرف زدن واقعی، نه کتاب.\n"
+            "شکسته (رو، شون، ه، می‌کنه). کوتاه و واضح.\n"
+            "فحش طبیعی و کامل: What the fuck are you doing?! → چه گوهی داری می‌خوری?! | "
+            "fuck you → گاییدمت | shit → گه | bastard → حرومزاده.\n"
+            "ممنوع: می‌باشد، است، را، خواهید، ایشان، این‌گونه، متأسفانه.\n"
+            "مثال: I didn't come to negotiate → نیومدم چونه بزنم | Hold on!! → وایسا!!\n"
+            "اسم خاص نویسه‌گردانی. OCR خراب → معنی حدس بزن. فقط JSON."
         )
         user_prompt = (
             "دیالوگ‌های صفحه مانهوا (ممکنه OCR خراب باشه). "
@@ -1269,10 +1239,8 @@ class MangaTranslator:
         if self.two_pass_ocr:
             enhanced = self._clahe_enhance(piece)
             detections += self.detect_text(enhanced)
-
             inverted = cv2.bitwise_not(piece)
             detections += self.detect_text(inverted)
-
             gray = cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY)
             _, bw = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
             if float(np.mean(bw)) < 127:
@@ -1280,16 +1248,6 @@ class MangaTranslator:
             bw = cv2.dilate(bw, np.ones((2, 2), np.uint8), iterations=1)
             bw_bgr = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
             detections += self.detect_text(bw_bgr)
-
-            h_p, w_p = piece.shape[:2]
-            if max(h_p, w_p) < 2200:
-                scale = 1.35
-                up = cv2.resize(piece, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
-                up_dets = self.detect_text(up)
-                for d in up_dets:
-                    d["poly"] = (d["poly"] / scale).astype(np.int32)
-                detections += up_dets
-
             detections = self._dedupe_detections(detections)
 
         return self.group_into_regions(detections, y_offset=y0)
@@ -1346,6 +1304,7 @@ class MangaTranslator:
 
         raw_image_copy = image.copy()
 
+        
         if dialogue_regions:
             print("[فاز ۳ - تفکر و ترجمه] ارسال درخواست به Gemini (با فرآیند خود-اصلاحی)...")
             self.translate_regions(dialogue_regions)
@@ -1365,6 +1324,8 @@ class MangaTranslator:
         if junk_regions:
             print(f"  [*] {len(junk_regions)} junk → دست نخورده می‌ماند.")
 
+        
+        
         to_clean = translated_regions
         print("[فاز ۴ - رندر نهایی] شروع جایگذاری و ذخیره...")
         if to_clean:
@@ -1587,6 +1548,7 @@ class MangaTranslator:
         img_urls, seen = [], set()
         raw_html = resp.text if hasattr(resp, "text") else resp.content.decode("utf-8", errors="ignore")
 
+        
         json_page_urls = []
         for m in re.finditer(
             r"https?://[^\"'\\s<>]+?\.(?:jpe?g|png|webp)(?:\?[^\"'\\s<>]*)?",
@@ -1637,6 +1599,7 @@ class MangaTranslator:
 
         img_urls = MangaTranslator._try_extend_sequential(img_urls, headers)
 
+        
         deduped = []
         seen_u = set()
         for u in img_urls:
@@ -1647,6 +1610,7 @@ class MangaTranslator:
             deduped.append(u)
         img_urls = deduped
 
+        
         numbered = []
         for u in img_urls:
             m = re.search(r"/(\d+)\.(?:jpe?g|png|webp)(?:\?|$)", u.lower())
@@ -1926,6 +1890,7 @@ html, body { background: #0a0a0b; }
         else:
             path = raw
 
+        
         parts = [p for p in re.split(r"[/\\]+", path) if p]
         skip: List[str] = []
         noise = {
@@ -1943,24 +1908,28 @@ html, body { background: #0a0a0b; }
                 continue
             if pl.endswith((".jpg", ".png", ".webp", ".jpeg", ".html", ".pdf")):
                 continue
+            
             cleaned = re.sub(r"^[a-z]{0,4}\d+-", "", pl)
-            cleaned = re.sub(r"-[a-f0-9]{6,}$", "", cleaned)
+            cleaned = re.sub(r"-[a-f0-9]{6,}$", "", cleaned)  
             if cleaned and cleaned not in noise:
                 candidates.append(cleaned)
             if pl not in candidates and pl not in noise:
                 candidates.append(pl)
 
         for c in candidates:
+            
             compact = re.sub(r"[^a-z0-9]", "", c)
             if len(compact) >= 5:
                 skip.append(compact)
             tokens = [t for t in re.split(r"[-_]+", c) if t and t not in noise and not t.isdigit()]
             if len(tokens) >= 2:
+                
                 for n in range(2, min(len(tokens), 4) + 1):
                     for i in range(0, len(tokens) - n + 1):
                         chunk = "".join(tokens[i:i + n])
                         if len(chunk) >= 5:
                             skip.append(chunk)
+                
                 full = "".join(tokens)
                 if len(full) >= 5:
                     skip.append(full)
@@ -1986,11 +1955,13 @@ html, body { background: #0a0a0b; }
         out_dir = os.path.join(cache_dir, "out")
         os.makedirs(out_dir, exist_ok=True)
 
+        
         title_skips = self._extract_title_skips_from_path(input_path)
         self._title_skip_patterns = title_skips
         MangaTranslator._title_skip_patterns = title_skips
+        MangaTranslator._title_skip_enabled = False
         if title_skips:
-            print(f"[*] عنوان سری برای رد ترجمه: {', '.join(title_skips[:8])}"
+            print(f"[*] عنوان سری (فقط صفحه ۱): {', '.join(title_skips[:8])}"
                   + ("…" if len(title_skips) > 8 else ""))
 
         if self._is_url(input_path):
@@ -2021,7 +1992,10 @@ html, body { background: #0a0a0b; }
         skipped = 0
         page_ext = "." + self.img_format if self.img_format != "jpg" else ".jpg"
 
-        for f in image_files:
+        for page_i, f in enumerate(image_files):
+            
+            MangaTranslator._title_skip_enabled = (page_i == 0)
+
             out_file = os.path.join(out_dir, os.path.splitext(os.path.basename(f))[0] + page_ext)
 
             if resume and os.path.isfile(out_file):
