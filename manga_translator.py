@@ -231,7 +231,7 @@ class MangaTranslator:
         inpaint_radius: int = 3,
         mask_padding: int = 3,
         pad_ratio: float = 0.06,
-        min_confidence: float = 0.12,
+        min_confidence: float = 0.08,
         max_retries: int = 4,
         request_delay: float = 0.0,
         max_chunk_height: int = 3600,
@@ -337,14 +337,14 @@ class MangaTranslator:
         ocr_kwargs = dict(
             lang=main_lang,
             show_log=False,
-            text_det_thresh=0.3,
-            text_det_box_thresh=0.5,
-            text_det_unclip_ratio=1.6,
-            det_db_thresh=0.3,
-            det_db_box_thresh=0.5,
-            det_db_unclip_ratio=1.6,
+            text_det_thresh=0.2,
+            text_det_box_thresh=0.4,
+            text_det_unclip_ratio=1.8,
+            det_db_thresh=0.2,
+            det_db_box_thresh=0.4,
+            det_db_unclip_ratio=1.8,
             max_batch_size=1,
-            use_dilation=False,
+            use_dilation=True,
         )
 
         try:
@@ -470,10 +470,13 @@ class MangaTranslator:
     def _clahe_enhance(image: np.ndarray) -> np.ndarray:
         lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
         l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+        clahe = cv2.createCLAHE(clipLimit=3.5, tileGridSize=(8, 8))
         l2 = clahe.apply(l)
         enhanced = cv2.merge((l2, a, b))
-        return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+        enhanced = cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+        blur = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
+        enhanced = cv2.addWeighted(enhanced, 1.4, blur, -0.4, 0)
+        return enhanced
 
     def detect_text(self, image: np.ndarray) -> List[dict]:
         results = None
@@ -1266,8 +1269,10 @@ class MangaTranslator:
         if self.two_pass_ocr:
             enhanced = self._clahe_enhance(piece)
             detections += self.detect_text(enhanced)
+
             inverted = cv2.bitwise_not(piece)
             detections += self.detect_text(inverted)
+
             gray = cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY)
             _, bw = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
             if float(np.mean(bw)) < 127:
@@ -1275,6 +1280,16 @@ class MangaTranslator:
             bw = cv2.dilate(bw, np.ones((2, 2), np.uint8), iterations=1)
             bw_bgr = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
             detections += self.detect_text(bw_bgr)
+
+            h_p, w_p = piece.shape[:2]
+            if max(h_p, w_p) < 2200:
+                scale = 1.35
+                up = cv2.resize(piece, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                up_dets = self.detect_text(up)
+                for d in up_dets:
+                    d["poly"] = (d["poly"] / scale).astype(np.int32)
+                detections += up_dets
+
             detections = self._dedupe_detections(detections)
 
         return self.group_into_regions(detections, y_offset=y0)
