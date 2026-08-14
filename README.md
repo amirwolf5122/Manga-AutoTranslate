@@ -157,6 +157,15 @@ Manga-AutoTranslate/
 
 ---
 
+حمایت مالی ( •̀ ω •́ )✧ ##
+
+Ton:`UQBScvayaxagwTfRBhlLNaqw-sZuadlnBjSvn8OJz7XZJJzT`
+
+-
+
+TRX:`TMmLTaCjaW1L2xWZmpR2EBeNyCawCzEkwa`
+
+---
 ## لایسنس
 
 MIT — آزاد برای استفاده شخصی و غیرتجاری.
