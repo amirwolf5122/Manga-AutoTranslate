@@ -98,32 +98,6 @@
 - در غیر این صورت → OpenCV inpaint (دو پاس)
 
 ---
-
-## مثال اجرا
-
-```bash
-python manga_translator.py \
-  -i "https://example.com/chapter/1.jpg" \
-  -o output.pdf \
-  --font fonts/Vazirmatn-Regular.ttf \
-  --api-key YOUR_KEY_1,YOUR_KEY_2 \
-  --ocr-lang en \
-  --model gemini-2.5-flash \
-  --max-width 900
-```
-
-یا با متغیر محیطی:
-
-```bash
-export GEMINI_API_KEY="key1,key2,key3"
-python manga_translator.py \
-  -i ./chapter_images \
-  -o ./translated.pdf \
-  --font fonts/Vazirmatn-Regular.ttf
-```
-
----
-
 ## چهار روش اجرا
 
 ### ۱) Google Colab (پیشنهادی)
