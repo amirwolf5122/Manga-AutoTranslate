@@ -109,7 +109,7 @@
 
 ### ۲) GitHub Actions
 
-1. ریپو را Fork کن  
+1. ریپو را [Fork](https://github.com/amirwolf5122/Manga-AutoTranslate/fork) کن  
 2. در Settings → Secrets → `GEMINI_API_KEY` را بگذار  
 3. از تب Actions ورک‌فلو را Run کن  
 4. خروجی را از Artifacts دانلود کن  
