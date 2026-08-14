@@ -247,7 +247,7 @@ class MangaTranslator:
         mask_padding: int = 3,
         pad_ratio: float = 0.06,
         min_confidence: float = 0.12,
-        max_retries: int = 5,
+        max_retries: int = 4,
         request_delay: float = 0.0,
         max_chunk_height: int = 3600,
         chunk_overlap: int = 300,
@@ -466,6 +466,7 @@ class MangaTranslator:
         )
 
     def _is_model_permanently_gone(self, err: Exception) -> bool:
+        
         msg = str(err).lower()
         return (
             "404" in str(err)
@@ -477,6 +478,7 @@ class MangaTranslator:
 
     @staticmethod
     def _static_fallback_models(primary: str) -> List[str]:
+        
         preferred = [
             "gemini-2.5-flash",
             "gemini-flash-latest",
@@ -540,6 +542,7 @@ class MangaTranslator:
         return (family_rank, version_rank, lite_rank, type_rank, n)
 
     def _discover_models_from_api(self, client) -> List[str]:
+        
         names: List[str] = []
         try:
             for m in client.models.list():
@@ -555,12 +558,14 @@ class MangaTranslator:
                 elif methods:
                     ok = "generateContent" in methods
                 else:
+                    
                     ok = "flash" in short.lower() and not any(
                         x in short.lower()
                         for x in ("image", "tts", "live", "audio", "embedding", "gemma")
                     )
                 if not ok:
                     continue
+                
                 low = short.lower()
                 if any(x in low for x in (
                     "image", "tts", "live", "audio", "embedding", "gemma",
@@ -571,6 +576,7 @@ class MangaTranslator:
         except Exception as e:
             print(f"    [!] کشف مدل از API ناموفق: {e}")
             return []
+        
         uniq = sorted(set(names), key=self._model_sort_key)
         return uniq
 
@@ -584,6 +590,7 @@ class MangaTranslator:
             print(f"[*] {len(discovered)} مدل flash از API پیدا شد؛ مرتب‌سازی بر اساس اولویت ۲.۵ → ۳.x")
             cascade = []
             if primary and primary not in discovered:
+                
                 cascade.append(primary)
             elif primary:
                 cascade.append(primary)
@@ -596,6 +603,7 @@ class MangaTranslator:
         return self._static_fallback_models(primary)
 
     def _drop_current_model_and_switch(self, reason: str = "") -> bool:
+        
         if not self._model_cascade:
             return False
         dead = self.model_name
@@ -707,6 +715,7 @@ class MangaTranslator:
 
                 if not text or conf < self.min_confidence or set(text).issubset(PUNCTUATION_SET):
                     continue
+                
                 if len(text) == 1 and text.upper() not in {"I", "!", "?", "…"}:
                     continue
 
@@ -736,6 +745,7 @@ class MangaTranslator:
         alpha_only = re.sub(r"[^\w]", "", stripped, flags=re.UNICODE)
         words = re.findall(r"[A-Za-z\uac00-\ud7a3]+", stripped)
 
+        
         dialogue_short = {
             "i", "im", "i'm", "me", "my", "you", "u", "he", "she", "we", "they",
             "no", "yes", "ok", "okay", "oh", "ah", "eh", "uh", "hm", "hmm",
@@ -750,11 +760,13 @@ class MangaTranslator:
             "thanks", "thank", "bye", "later", "never", "always", "maybe",
             "huh", "nah", "yep", "yup", "nope", "yea", "yeah", "yup",
         }
+        
         core = re.sub(r"[!?.…~\-]+$", "", low_full).strip()
         if core in dialogue_short or low_full in dialogue_short:
             return "dialogue"
         if alpha_only.lower() in dialogue_short:
             return "dialogue"
+        
         if stripped.upper() == "I":
             return "dialogue"
 
@@ -813,7 +825,9 @@ class MangaTranslator:
         if hangul_len >= 1 and hangul_len == len(alpha_only) and len(stripped) <= 6:
             return "sfx"
 
+        
         if len(stripped) <= 8 and SFX_WORD_RE.match(stripped):
+            
             if core not in dialogue_short and alpha_only.lower() not in dialogue_short:
                 return "sfx"
 
@@ -1107,7 +1121,6 @@ class MangaTranslator:
             return
 
         payload = [{"id": r.id, "text": r.source_text} for r in regions]
-
         '''system_instruction = (
             "دیالوگ مانهوا رو فارسیِ کوچه‌بازار بنویس؛ مثل حرف زدن واقعی، نه کتاب.\n"
             "شکسته (رو، شون، ه، می‌کنه). کوتاه و واضح.\n"
