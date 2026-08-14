@@ -157,7 +157,8 @@ Manga-AutoTranslate/
 
 ---
 
-## حمایت مالی ヾ(•ω•`)o
+## حمایت مالی
+ヾ(•ω•`)o
 
 
 Ton:`UQBScvayaxagwTfRBhlLNaqw-sZuadlnBjSvn8OJz7XZJJzT`
