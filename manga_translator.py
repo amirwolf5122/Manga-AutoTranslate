@@ -466,7 +466,6 @@ class MangaTranslator:
         )
 
     def _is_model_permanently_gone(self, err: Exception) -> bool:
-        """مدل برای همیشه حذف/مسدود شده (نه فقط شلوغی موقت)."""
         msg = str(err).lower()
         return (
             "404" in str(err)
@@ -478,7 +477,6 @@ class MangaTranslator:
 
     @staticmethod
     def _static_fallback_models(primary: str) -> List[str]:
-        """لیست ثابت در صورت شکست کشف از API."""
         preferred = [
             "gemini-2.5-flash",
             "gemini-flash-latest",
@@ -501,11 +499,6 @@ class MangaTranslator:
 
     @staticmethod
     def _model_sort_key(name: str) -> tuple:
-        """
-        اولویت کاربر:
-          gemini-2.5-flash → gemini-flash-latest → gemini-2.5-flash-lite →
-          gemini-flash-lite-latest → gemini-3.7… → gemini-3.6… → …
-        """
         n = name.lower().replace("models/", "")
         ver_m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
         major_minor = 0.0
@@ -547,7 +540,6 @@ class MangaTranslator:
         return (family_rank, version_rank, lite_rank, type_rank, n)
 
     def _discover_models_from_api(self, client) -> List[str]:
-        """لیست مدل‌های generateContent را از API می‌گیرد و مرتب می‌کند."""
         names: List[str] = []
         try:
             for m in client.models.list():
@@ -563,14 +555,12 @@ class MangaTranslator:
                 elif methods:
                     ok = "generateContent" in methods
                 else:
-                    # اگر متادیتا نبود، مدل‌های flash متنی را قبول کن
                     ok = "flash" in short.lower() and not any(
                         x in short.lower()
                         for x in ("image", "tts", "live", "audio", "embedding", "gemma")
                     )
                 if not ok:
                     continue
-                # رد کردن مدل‌های غیرمرتبط با ترجمه متن
                 low = short.lower()
                 if any(x in low for x in (
                     "image", "tts", "live", "audio", "embedding", "gemma",
@@ -581,7 +571,6 @@ class MangaTranslator:
         except Exception as e:
             print(f"    [!] کشف مدل از API ناموفق: {e}")
             return []
-        # یکتا و مرتب
         uniq = sorted(set(names), key=self._model_sort_key)
         return uniq
 
@@ -595,7 +584,6 @@ class MangaTranslator:
             print(f"[*] {len(discovered)} مدل flash از API پیدا شد؛ مرتب‌سازی بر اساس اولویت ۲.۵ → ۳.x")
             cascade = []
             if primary and primary not in discovered:
-                # اگر primary در لیست نبود، باز هم اول بگذار (ممکن است alias باشد)
                 cascade.append(primary)
             elif primary:
                 cascade.append(primary)
@@ -608,7 +596,6 @@ class MangaTranslator:
         return self._static_fallback_models(primary)
 
     def _drop_current_model_and_switch(self, reason: str = "") -> bool:
-        """مدل فعلی را از cascade حذف و به بعدی برو (برای 404 / no longer available)."""
         if not self._model_cascade:
             return False
         dead = self.model_name
@@ -720,7 +707,6 @@ class MangaTranslator:
 
                 if not text or conf < self.min_confidence or set(text).issubset(PUNCTUATION_SET):
                     continue
-                # حروف تکی مهم دیالوگ (مثل I) را رد نکن
                 if len(text) == 1 and text.upper() not in {"I", "!", "?", "…"}:
                     continue
 
@@ -750,7 +736,6 @@ class MangaTranslator:
         alpha_only = re.sub(r"[^\w]", "", stripped, flags=re.UNICODE)
         words = re.findall(r"[A-Za-z\uac00-\ud7a3]+", stripped)
 
-        # کلمات کوتاه دیالوگ رایج — قبل از فیلتر junk/SFX بررسی شوند
         dialogue_short = {
             "i", "im", "i'm", "me", "my", "you", "u", "he", "she", "we", "they",
             "no", "yes", "ok", "okay", "oh", "ah", "eh", "uh", "hm", "hmm",
@@ -765,13 +750,11 @@ class MangaTranslator:
             "thanks", "thank", "bye", "later", "never", "always", "maybe",
             "huh", "nah", "yep", "yup", "nope", "yea", "yeah", "yup",
         }
-        # بدون علامت سؤال/تعجب برای مقایسه
         core = re.sub(r"[!?.…~\-]+$", "", low_full).strip()
         if core in dialogue_short or low_full in dialogue_short:
             return "dialogue"
         if alpha_only.lower() in dialogue_short:
             return "dialogue"
-        # حرف تکی I
         if stripped.upper() == "I":
             return "dialogue"
 
@@ -830,9 +813,7 @@ class MangaTranslator:
         if hangul_len >= 1 and hangul_len == len(alpha_only) and len(stripped) <= 6:
             return "sfx"
 
-        # SFX واقعی (boom, bang, ...) را SFX نگه دار؛ اما interjectionهای دیالوگ را نه
         if len(stripped) <= 8 and SFX_WORD_RE.match(stripped):
-            # اگر هسته‌ی کلمه دیالوگ کوتاه بود، dialogue بماند
             if core not in dialogue_short and alpha_only.lower() not in dialogue_short:
                 return "sfx"
 
