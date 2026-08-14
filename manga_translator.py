@@ -247,7 +247,7 @@ class MangaTranslator:
         mask_padding: int = 3,
         pad_ratio: float = 0.06,
         min_confidence: float = 0.12,
-        max_retries: int = 4,
+        max_retries: int = 5,
         request_delay: float = 0.0,
         max_chunk_height: int = 3600,
         chunk_overlap: int = 300,
@@ -449,19 +449,36 @@ class MangaTranslator:
 
     def _is_model_unavailable_error(self, err: Exception) -> bool:
         msg = str(err)
+        low = msg.lower()
         return (
             "503" in msg
             or "UNAVAILABLE" in msg
-            or "high demand" in msg.lower()
-            or "try again later" in msg.lower()
-            or "currently experiencing" in msg.lower()
-            or "model not found" in msg.lower()
-            or "not found for api version" in msg.lower()
-            or "is not supported" in msg.lower()
+            or "404" in msg
+            or "NOT_FOUND" in msg
+            or "high demand" in low
+            or "try again later" in low
+            or "currently experiencing" in low
+            or "model not found" in low
+            or "not found for api version" in low
+            or "is not supported" in low
+            or "no longer available" in low
+            or "please update your code to use a newer model" in low
+        )
+
+    def _is_model_permanently_gone(self, err: Exception) -> bool:
+        """مدل برای همیشه حذف/مسدود شده (نه فقط شلوغی موقت)."""
+        msg = str(err).lower()
+        return (
+            "404" in str(err)
+            or "not_found" in msg
+            or "no longer available" in msg
+            or "please update your code to use a newer model" in msg
+            or "model not found" in msg
         )
 
     @staticmethod
     def _static_fallback_models(primary: str) -> List[str]:
+        """لیست ثابت در صورت شکست کشف از API."""
         preferred = [
             "gemini-2.5-flash",
             "gemini-flash-latest",
@@ -484,6 +501,11 @@ class MangaTranslator:
 
     @staticmethod
     def _model_sort_key(name: str) -> tuple:
+        """
+        اولویت کاربر:
+          gemini-2.5-flash → gemini-flash-latest → gemini-2.5-flash-lite →
+          gemini-flash-lite-latest → gemini-3.7… → gemini-3.6… → …
+        """
         n = name.lower().replace("models/", "")
         ver_m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
         major_minor = 0.0
@@ -525,6 +547,7 @@ class MangaTranslator:
         return (family_rank, version_rank, lite_rank, type_rank, n)
 
     def _discover_models_from_api(self, client) -> List[str]:
+        """لیست مدل‌های generateContent را از API می‌گیرد و مرتب می‌کند."""
         names: List[str] = []
         try:
             for m in client.models.list():
@@ -540,12 +563,14 @@ class MangaTranslator:
                 elif methods:
                     ok = "generateContent" in methods
                 else:
+                    # اگر متادیتا نبود، مدل‌های flash متنی را قبول کن
                     ok = "flash" in short.lower() and not any(
                         x in short.lower()
                         for x in ("image", "tts", "live", "audio", "embedding", "gemma")
                     )
                 if not ok:
                     continue
+                # رد کردن مدل‌های غیرمرتبط با ترجمه متن
                 low = short.lower()
                 if any(x in low for x in (
                     "image", "tts", "live", "audio", "embedding", "gemma",
@@ -556,6 +581,7 @@ class MangaTranslator:
         except Exception as e:
             print(f"    [!] کشف مدل از API ناموفق: {e}")
             return []
+        # یکتا و مرتب
         uniq = sorted(set(names), key=self._model_sort_key)
         return uniq
 
@@ -569,6 +595,7 @@ class MangaTranslator:
             print(f"[*] {len(discovered)} مدل flash از API پیدا شد؛ مرتب‌سازی بر اساس اولویت ۲.۵ → ۳.x")
             cascade = []
             if primary and primary not in discovered:
+                # اگر primary در لیست نبود، باز هم اول بگذار (ممکن است alias باشد)
                 cascade.append(primary)
             elif primary:
                 cascade.append(primary)
@@ -579,6 +606,27 @@ class MangaTranslator:
 
         print("[*] کشف API ممکن نشد → استفاده از لیست ثابت fallback.")
         return self._static_fallback_models(primary)
+
+    def _drop_current_model_and_switch(self, reason: str = "") -> bool:
+        """مدل فعلی را از cascade حذف و به بعدی برو (برای 404 / no longer available)."""
+        if not self._model_cascade:
+            return False
+        dead = self.model_name
+        if 0 <= self._model_index < len(self._model_cascade):
+            del self._model_cascade[self._model_index]
+        else:
+            self._model_cascade = [m for m in self._model_cascade if m != dead]
+        if not self._model_cascade:
+            print(f"    [!] مدل «{dead}» حذف شد ولی مدل دیگری در cascade نیست.")
+            return False
+        if self._model_index >= len(self._model_cascade):
+            self._model_index = 0
+        self.model_name = self._model_cascade[self._model_index]
+        extra = f" ({reason})" if reason else ""
+        print(f"    [!] مدل «{dead}» دیگر در دسترس نیست → حذف شد.")
+        print(f"    [*] مدل بعدی فعال شد: {self.model_name} "
+              f"[{self._model_index + 1}/{len(self._model_cascade)}]{extra}")
+        return True
 
     def _switch_to_next_model(self, reason: str = "") -> bool:
         if not self._model_cascade or len(self._model_cascade) <= 1:
@@ -672,6 +720,7 @@ class MangaTranslator:
 
                 if not text or conf < self.min_confidence or set(text).issubset(PUNCTUATION_SET):
                     continue
+                # حروف تکی مهم دیالوگ (مثل I) را رد نکن
                 if len(text) == 1 and text.upper() not in {"I", "!", "?", "…"}:
                     continue
 
@@ -701,6 +750,7 @@ class MangaTranslator:
         alpha_only = re.sub(r"[^\w]", "", stripped, flags=re.UNICODE)
         words = re.findall(r"[A-Za-z\uac00-\ud7a3]+", stripped)
 
+        # کلمات کوتاه دیالوگ رایج — قبل از فیلتر junk/SFX بررسی شوند
         dialogue_short = {
             "i", "im", "i'm", "me", "my", "you", "u", "he", "she", "we", "they",
             "no", "yes", "ok", "okay", "oh", "ah", "eh", "uh", "hm", "hmm",
@@ -715,11 +765,13 @@ class MangaTranslator:
             "thanks", "thank", "bye", "later", "never", "always", "maybe",
             "huh", "nah", "yep", "yup", "nope", "yea", "yeah", "yup",
         }
+        # بدون علامت سؤال/تعجب برای مقایسه
         core = re.sub(r"[!?.…~\-]+$", "", low_full).strip()
         if core in dialogue_short or low_full in dialogue_short:
             return "dialogue"
         if alpha_only.lower() in dialogue_short:
             return "dialogue"
+        # حرف تکی I
         if stripped.upper() == "I":
             return "dialogue"
 
@@ -778,7 +830,9 @@ class MangaTranslator:
         if hangul_len >= 1 and hangul_len == len(alpha_only) and len(stripped) <= 6:
             return "sfx"
 
+        # SFX واقعی (boom, bang, ...) را SFX نگه دار؛ اما interjectionهای دیالوگ را نه
         if len(stripped) <= 8 and SFX_WORD_RE.match(stripped):
+            # اگر هسته‌ی کلمه دیالوگ کوتاه بود، dialogue بماند
             if core not in dialogue_short and alpha_only.lower() not in dialogue_short:
                 return "sfx"
 
@@ -1184,21 +1238,33 @@ class MangaTranslator:
                     ) from e
 
                 if self._is_model_unavailable_error(e):
-                    print(f"    [!] مدل «{self.model_name}» موقتاً در دسترس نیست (۵۰۳/high demand)...")
-                    if self._switch_to_next_model(reason="۵۰۳ UNAVAILABLE"):
-                        time.sleep(0.3)
-                        continue
-                    if self._switch_to_next_key(reason="۵۰۳ UNAVAILABLE", cycle=True):
+                    if self._is_model_permanently_gone(e):
+                        print(f"    [!] مدل «{self.model_name}» دیگر موجود نیست (۴۰۴/NOT_FOUND)...")
+                        if self._drop_current_model_and_switch(reason="404 NOT_FOUND"):
+                            time.sleep(0.2)
+                            continue
+                    else:
+                        print(f"    [!] مدل «{self.model_name}» موقتاً در دسترس نیست (۵۰۳/high demand)...")
+                        if self._switch_to_next_model(reason="۵۰۳ UNAVAILABLE"):
+                            time.sleep(0.3)
+                            continue
+                    if self._switch_to_next_key(reason="model unavailable", cycle=True):
                         time.sleep(min(delay, 3))
                         continue
-                    print(f"    [!] فقط یک کلید/مدل موجوده و ۵۰۳ گرفت؛ کمی صبر و تلاش مجدد...")
+                    print(f"    [!] فقط یک کلید/مدل موجوده؛ کمی صبر و تلاش مجدد...")
             except Exception as e:
                 last_err = e
                 if self._is_model_unavailable_error(e):
-                    print(f"    [!] خطای در دسترس نبودن مدل «{self.model_name}»...")
-                    if self._switch_to_next_model(reason="UNAVAILABLE"):
-                        time.sleep(0.3)
-                        continue
+                    if self._is_model_permanently_gone(e):
+                        print(f"    [!] مدل «{self.model_name}» دیگر موجود نیست (۴۰۴)...")
+                        if self._drop_current_model_and_switch(reason="404 NOT_FOUND"):
+                            time.sleep(0.2)
+                            continue
+                    else:
+                        print(f"    [!] خطای در دسترس نبودن مدل «{self.model_name}»...")
+                        if self._switch_to_next_model(reason="UNAVAILABLE"):
+                            time.sleep(0.3)
+                            continue
                     if self._switch_to_next_key(reason="UNAVAILABLE", cycle=True):
                         time.sleep(min(delay, 3))
                         continue
