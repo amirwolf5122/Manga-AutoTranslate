@@ -270,6 +270,8 @@ class MangaTranslator:
         self._key_index: int = 0
         self._ocr_lock = threading.Lock()
         self.model_name = model_name
+        self._model_cascade: List[str] = []
+        self._model_index: int = 0
         self.font_path = font_path
         self.reading_order = reading_order
         self.group_margin = group_margin
@@ -395,10 +397,16 @@ class MangaTranslator:
               f"(MKLDNN خاموش، workers={self.max_workers}).")
 
         self.client = genai.Client(api_key=self._api_keys[0])
+        self._model_cascade = self._build_model_cascade(self.model_name, self.client)
+        self.model_name = self._model_cascade[0]
+        cascade_info = f" | cascade: {' → '.join(self._model_cascade[:5])}" + (
+            "…" if len(self._model_cascade) > 5 else ""
+        )
         if len(self._api_keys) > 1:
-            print(f"[*] مدل ترجمه: {self.model_name} | {len(self._api_keys)} کلید API (جابه‌جایی خودکار روی سهمیه/۵۰۳/خطا)")
+            print(f"[*] مدل ترجمه: {self.model_name}{cascade_info} | "
+                  f"{len(self._api_keys)} کلید API (جابه‌جایی خودکار روی سهمیه/۵۰۳/خطا)")
         else:
-            print(f"[*] مدل ترجمه: {self.model_name}")
+            print(f"[*] مدل ترجمه: {self.model_name}{cascade_info}")
 
     def _get_lama(self):
         if self._lama is None and self.use_lama:
@@ -447,7 +455,143 @@ class MangaTranslator:
             or "high demand" in msg.lower()
             or "try again later" in msg.lower()
             or "currently experiencing" in msg.lower()
+            or "model not found" in msg.lower()
+            or "not found for api version" in msg.lower()
+            or "is not supported" in msg.lower()
         )
+
+    @staticmethod
+    def _static_fallback_models(primary: str) -> List[str]:
+        preferred = [
+            "gemini-2.5-flash",
+            "gemini-flash-latest",
+            "gemini-2.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.7-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+            "gemini-2.0-flash",
+            "gemini-2.0-flash-lite",
+            "gemini-1.5-flash",
+        ]
+        cascade = [primary] if primary else []
+        for m in preferred:
+            if m not in cascade:
+                cascade.append(m)
+        return cascade or preferred
+
+    @staticmethod
+    def _model_sort_key(name: str) -> tuple:
+        n = name.lower().replace("models/", "")
+        ver_m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+        major_minor = 0.0
+        if ver_m:
+            try:
+                major_minor = float(ver_m.group(1))
+            except ValueError:
+                major_minor = 0.0
+
+        is_lite = "lite" in n
+        is_flash = "flash" in n
+        is_pro = "pro" in n and "flash" not in n
+
+        if n == "gemini-2.5-flash" or (abs(major_minor - 2.5) < 0.01 and not is_lite and is_flash):
+            family_rank = 0
+        elif n == "gemini-flash-latest":
+            family_rank = 1
+        elif n == "gemini-2.5-flash-lite" or (abs(major_minor - 2.5) < 0.01 and is_lite):
+            family_rank = 2
+        elif n == "gemini-flash-lite-latest":
+            family_rank = 3
+        elif major_minor >= 2.5 and major_minor < 3.0:
+            family_rank = 4
+        elif major_minor >= 3.0:
+            family_rank = 5
+        elif n.endswith("-latest") and "flash" in n:
+            family_rank = 6
+        elif major_minor >= 2.0:
+            family_rank = 7
+        elif major_minor >= 1.0:
+            family_rank = 8
+        else:
+            family_rank = 9
+
+        version_rank = -major_minor
+        lite_rank = 1 if is_lite else 0
+        type_rank = 0 if is_flash else (2 if is_pro else 1)
+
+        return (family_rank, version_rank, lite_rank, type_rank, n)
+
+    def _discover_models_from_api(self, client) -> List[str]:
+        names: List[str] = []
+        try:
+            for m in client.models.list():
+                raw = getattr(m, "name", None) or ""
+                short = raw.replace("models/", "").strip()
+                if not short:
+                    continue
+                actions = getattr(m, "supported_actions", None) or []
+                methods = getattr(m, "supported_generation_methods", None) or []
+                ok = False
+                if actions:
+                    ok = "generateContent" in actions
+                elif methods:
+                    ok = "generateContent" in methods
+                else:
+                    ok = "flash" in short.lower() and not any(
+                        x in short.lower()
+                        for x in ("image", "tts", "live", "audio", "embedding", "gemma")
+                    )
+                if not ok:
+                    continue
+                low = short.lower()
+                if any(x in low for x in (
+                    "image", "tts", "live", "audio", "embedding", "gemma",
+                    "robotics", "omni", "nano-banana", "imagen",
+                )):
+                    continue
+                names.append(short)
+        except Exception as e:
+            print(f"    [!] کشف مدل از API ناموفق: {e}")
+            return []
+        uniq = sorted(set(names), key=self._model_sort_key)
+        return uniq
+
+    def _build_model_cascade(self, primary: str, client=None) -> List[str]:
+        primary = (primary or "gemini-2.5-flash").strip().replace("models/", "")
+        discovered: List[str] = []
+        if client is not None:
+            discovered = self._discover_models_from_api(client)
+
+        if discovered:
+            print(f"[*] {len(discovered)} مدل flash از API پیدا شد؛ مرتب‌سازی بر اساس اولویت ۲.۵ → ۳.x")
+            cascade = []
+            if primary and primary not in discovered:
+                cascade.append(primary)
+            elif primary:
+                cascade.append(primary)
+            for m in discovered:
+                if m not in cascade:
+                    cascade.append(m)
+            return cascade
+
+        print("[*] کشف API ممکن نشد → استفاده از لیست ثابت fallback.")
+        return self._static_fallback_models(primary)
+
+    def _switch_to_next_model(self, reason: str = "") -> bool:
+        if not self._model_cascade or len(self._model_cascade) <= 1:
+            return False
+        next_idx = self._model_index + 1
+        if next_idx >= len(self._model_cascade):
+            return False
+        self._model_index = next_idx
+        self.model_name = self._model_cascade[self._model_index]
+        extra = f" ({reason})" if reason else ""
+        print(f"    [*] مدل بعدی فعال شد: {self.model_name} "
+              f"[{self._model_index + 1}/{len(self._model_cascade)}]{extra}")
+        return True
 
     def _switch_to_next_key(self, reason: str = "", cycle: bool = False) -> bool:
         if not self._api_keys:
@@ -528,7 +672,7 @@ class MangaTranslator:
 
                 if not text or conf < self.min_confidence or set(text).issubset(PUNCTUATION_SET):
                     continue
-                if len(text) == 1 and text not in {"!", "?", "…"}:
+                if len(text) == 1 and text.upper() not in {"I", "!", "?", "…"}:
                     continue
 
                 stripped = text.strip()
@@ -557,6 +701,28 @@ class MangaTranslator:
         alpha_only = re.sub(r"[^\w]", "", stripped, flags=re.UNICODE)
         words = re.findall(r"[A-Za-z\uac00-\ud7a3]+", stripped)
 
+        dialogue_short = {
+            "i", "im", "i'm", "me", "my", "you", "u", "he", "she", "we", "they",
+            "no", "yes", "ok", "okay", "oh", "ah", "eh", "uh", "hm", "hmm",
+            "hi", "hey", "yo", "bye", "wow", "yay", "ouch", "ow", "ugh",
+            "stop", "go", "run", "help", "wait", "hold", "look", "come",
+            "move", "fire", "ready", "now", "true", "lie", "die", "what",
+            "why", "how", "who", "where", "when", "huh", "eh?", "ah!",
+            "no!", "yes!", "ok!", "oh!", "ah!", "hey!", "wow!", "stop!",
+            "go!", "run!", "help!", "wait!", "what?", "why?", "how?",
+            "who?", "huh?", "no?", "yes?", "really", "sure", "fine",
+            "damn", "shit", "fuck", "hell", "god", "please", "sorry",
+            "thanks", "thank", "bye", "later", "never", "always", "maybe",
+            "huh", "nah", "yep", "yup", "nope", "yea", "yeah", "yup",
+        }
+        core = re.sub(r"[!?.…~\-]+$", "", low_full).strip()
+        if core in dialogue_short or low_full in dialogue_short:
+            return "dialogue"
+        if alpha_only.lower() in dialogue_short:
+            return "dialogue"
+        if stripped.upper() == "I":
+            return "dialogue"
+
         digits_only = re.sub(r"[^\d]", "", stripped)
         if stripped.isdigit() or re.fullmatch(r"[\d\s.%oO]+", stripped):
             return "junk"
@@ -564,9 +730,11 @@ class MangaTranslator:
             non_digit_alpha = re.sub(r"[\d\s.%oO]", "", stripped)
             if len(non_digit_alpha) <= 4:
                 return "junk"
-        if len(alpha_only) <= 1 and len(stripped) <= 3:
+        if len(alpha_only) <= 1 and len(stripped) <= 3 and stripped.upper() != "I":
             return "junk"
-        if len(alpha_only) <= 2 and len(stripped) <= 5 and not any(c.isalpha() and c.isascii() for c in stripped if len(stripped) > 3):
+        if len(alpha_only) <= 2 and len(stripped) <= 5 and not any(
+            c.isalpha() and c.isascii() for c in stripped if len(stripped) > 3
+        ):
             return "junk"
 
         if getattr(MangaTranslator, "_title_skip_enabled", False):
@@ -611,7 +779,8 @@ class MangaTranslator:
             return "sfx"
 
         if len(stripped) <= 8 and SFX_WORD_RE.match(stripped):
-            return "sfx"
+            if core not in dialogue_short and alpha_only.lower() not in dialogue_short:
+                return "sfx"
 
         if (
             2 <= len(stripped) <= 6
@@ -619,17 +788,11 @@ class MangaTranslator:
             and " " not in stripped
             and stripped.isalpha()
         ):
-            dialogue_short = {
-                "OK", "YES", "NO", "HI", "HEY", "OH", "AH", "EH", "UH",
-                "WOW", "YAY", "STOP", "GO", "RUN", "HELP", "WAIT",
-                "WHAT", "WHY", "HOW", "WHO", "HOLD", "LOOK", "COME",
-                "MOVE", "FIRE", "READY", "NOW", "TRUE", "LIE", "DIE",
-            }
-            if stripped not in dialogue_short:
+            upper_dialogue = {w.upper() for w in dialogue_short if w.isalpha()}
+            if stripped not in upper_dialogue:
                 return "sfx"
 
-        
-        if len(alpha_only) <= 2 and len(stripped) <= 4:
+        if len(alpha_only) <= 2 and len(stripped) <= 4 and stripped.upper() != "I":
             return "junk"
 
         return "dialogue"
@@ -1013,17 +1176,23 @@ class MangaTranslator:
                     ) from e
 
                 if self._is_model_unavailable_error(e):
-                    print(f"    [!] مدل موقتاً در دسترس نیست (۵۰۳/high demand). تست کلید بعدی...")
-                    if self._switch_to_next_key(reason="۵۰۳ UNAVAILABLE", cycle=True):
-                        time.sleep(min(delay, 5))
+                    print(f"    [!] مدل «{self.model_name}» موقتاً در دسترس نیست (۵۰۳/high demand)...")
+                    if self._switch_to_next_model(reason="۵۰۳ UNAVAILABLE"):
+                        time.sleep(0.3)
                         continue
-                    print(f"    [!] فقط یک کلید موجوده و ۵۰۳ گرفت؛ کمی صبر و تلاش مجدد...")
+                    if self._switch_to_next_key(reason="۵۰۳ UNAVAILABLE", cycle=True):
+                        time.sleep(min(delay, 3))
+                        continue
+                    print(f"    [!] فقط یک کلید/مدل موجوده و ۵۰۳ گرفت؛ کمی صبر و تلاش مجدد...")
             except Exception as e:
                 last_err = e
                 if self._is_model_unavailable_error(e):
-                    print(f"    [!] خطای در دسترس نبودن مدل. تست کلید بعدی...")
+                    print(f"    [!] خطای در دسترس نبودن مدل «{self.model_name}»...")
+                    if self._switch_to_next_model(reason="UNAVAILABLE"):
+                        time.sleep(0.3)
+                        continue
                     if self._switch_to_next_key(reason="UNAVAILABLE", cycle=True):
-                        time.sleep(min(delay, 5))
+                        time.sleep(min(delay, 3))
                         continue
                 if self._is_banned_or_invalid_key_error(e):
                     if self._remove_current_key_and_switch(reason=str(e)[:120]):
