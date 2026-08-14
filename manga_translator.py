@@ -270,7 +270,8 @@ class MangaTranslator:
         self._key_index: int = 0
         self._ocr_lock = threading.Lock()
         self.model_name = model_name
-        self.font_path = font_path
+        self._model_cascade: List[str] = self._build_model_cascade(model_name)
+        self._model_index: int = 0
         self.reading_order = reading_order
         self.group_margin = group_margin
         self.inpaint_radius = inpaint_radius
@@ -296,9 +297,11 @@ class MangaTranslator:
 
         if not font_path or not os.path.isfile(font_path):
             raise FileNotFoundError(
-                "یک فونت معتبر فارسی (ttf) با --font مشخص کنید. "
-                "پیشنهاد: فونت Vazirmatn (رایگان و متن‌باز)."
+                "یک فونت فارسی لازم است (--font).\n"
+                "پیشنهاد: --font fonts/Vazirmatn-Regular.ttf"
             )
+        self.font_path = font_path
+        print(f"[*] فونت: {os.path.basename(self.font_path)}")
 
         if gpu is None:
             ocr_gpu = self._detect_paddle_gpu()
@@ -395,10 +398,15 @@ class MangaTranslator:
               f"(MKLDNN خاموش، workers={self.max_workers}).")
 
         self.client = genai.Client(api_key=self._api_keys[0])
+        cascade_preview = " → ".join(self._model_cascade[:5])
+        if len(self._model_cascade) > 5:
+            cascade_preview += " → ..."
         if len(self._api_keys) > 1:
-            print(f"[*] مدل ترجمه: {self.model_name} | {len(self._api_keys)} کلید API (جابه‌جایی خودکار روی سهمیه/۵۰۳/خطا)")
+            print(f"[*] مدل ترجمه: {self.model_name} | {len(self._api_keys)} کلید API")
+            print(f"[*] زنجیره مدل (fallback): {cascade_preview}")
         else:
             print(f"[*] مدل ترجمه: {self.model_name}")
+            print(f"[*] زنجیره مدل (fallback): {cascade_preview}")
 
     def _get_lama(self):
         if self._lama is None and self.use_lama:
@@ -439,14 +447,53 @@ class MangaTranslator:
         )
         return any(ind in msg for ind in indicators)
 
+    @staticmethod
+    def _build_model_cascade(primary: str) -> List[str]:
+
+        primary = (primary or "gemini-2.5-flash").strip()
+        preferred = [
+            "gemini-2.5-flash",
+            "gemini-flash-latest",
+            "gemini-2.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.5-flash",
+            "gemini-3.6-flash",
+            "gemini-3.7-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3.1-flash-lite",
+        ]
+        cascade = [primary]
+        for m in preferred:
+            if m not in cascade:
+                cascade.append(m)
+        return cascade
+
+    def _switch_to_next_model(self, reason: str = "") -> bool:
+        next_idx = self._model_index + 1
+        if next_idx >= len(self._model_cascade):
+            return False
+        self._model_index = next_idx
+        self.model_name = self._model_cascade[self._model_index]
+        extra = f" ({reason})" if reason else ""
+        print(f"    [*] مدل عوض شد → «{self.model_name}»{extra}")
+        return True
+
     def _is_model_unavailable_error(self, err: Exception) -> bool:
         msg = str(err)
+        low = msg.lower()
         return (
             "503" in msg
+            or "404" in msg
             or "UNAVAILABLE" in msg
-            or "high demand" in msg.lower()
-            or "try again later" in msg.lower()
-            or "currently experiencing" in msg.lower()
+            or "NOT_FOUND" in msg
+            or "high demand" in low
+            or "try again later" in low
+            or "currently experiencing" in low
+            or "not found" in low
+            or "is not found" in low
+            or "invalid model" in low
+            or "no longer available" in low
+            or "not available to new users" in low
         )
 
     def _switch_to_next_key(self, reason: str = "", cycle: bool = False) -> bool:
@@ -566,7 +613,9 @@ class MangaTranslator:
                 return "junk"
         if len(alpha_only) <= 1 and len(stripped) <= 3:
             return "junk"
-        if len(alpha_only) <= 2 and len(stripped) <= 5 and not any(c.isalpha() and c.isascii() for c in stripped if len(stripped) > 3):
+        if len(alpha_only) <= 2 and len(stripped) <= 5 and not any(
+            c.isalpha() and c.isascii() for c in stripped if len(stripped) > 3
+        ):
             return "junk"
 
         if getattr(MangaTranslator, "_title_skip_enabled", False):
@@ -602,13 +651,23 @@ class MangaTranslator:
         ):
             return "promo"
 
-        if len(words) >= 2 or len(stripped) > 8:
-            return "dialogue"
+        interjection_re = re.compile(
+            r"(?i)^(ah+|oh+|uh+|hm+|mm+|eh+|ugh+|argh*|aargh*|ng+|kuh+|guh+|"
+            r"ha+|heh*|hih*|wah+|ya+|woah?|whoa|"
+            r"i|me|you|yes|no|ok|okay|hey|hi|yo|"
+            r"what|why|how|who|huh|eh)"
+            r"[!?.…~\-]*$"
+        )
+        is_interjection = bool(interjection_re.match(stripped))
 
         hangul_chars = HANGUL_RE.findall(stripped)
         hangul_len = sum(len(h) for h in hangul_chars)
+
         if hangul_len >= 1 and hangul_len == len(alpha_only) and len(stripped) <= 6:
             return "sfx"
+
+        if is_interjection and len(stripped) <= 10:
+            return "dialogue"
 
         if len(stripped) <= 8 and SFX_WORD_RE.match(stripped):
             return "sfx"
@@ -624,12 +683,14 @@ class MangaTranslator:
                 "WOW", "YAY", "STOP", "GO", "RUN", "HELP", "WAIT",
                 "WHAT", "WHY", "HOW", "WHO", "HOLD", "LOOK", "COME",
                 "MOVE", "FIRE", "READY", "NOW", "TRUE", "LIE", "DIE",
+                "I", "ME", "YO",
             }
             if stripped not in dialogue_short:
                 return "sfx"
 
-        
-        if len(alpha_only) <= 2 and len(stripped) <= 4:
+        if len(alpha_only) <= 1 and len(stripped) <= 3:
+            return "junk"
+        if len(alpha_only) <= 2 and len(stripped) <= 4 and not is_interjection:
             return "junk"
 
         return "dialogue"
@@ -747,8 +808,6 @@ class MangaTranslator:
             angles = [detections[i].get("angle", 0.0) for i in idxs_sorted if i < len(detections)]
             avg_angle = float(np.mean(angles)) if angles else 0.0
 
-            
-            
             region_kind = MangaTranslator._classify_text(text)
 
             regions.append(
@@ -953,9 +1012,11 @@ class MangaTranslator:
             },
         )
 
-        delay = 3.0
+        delay = 1.5
         last_err = None
-        for attempt in range(1, self.max_retries + 1):
+        max_attempts = max(self.max_retries, len(self._model_cascade) + len(self._api_keys) + 2)
+
+        for attempt in range(1, max_attempts + 1):
             try:
                 response = self.client.models.generate_content(
                     model=self.model_name, contents=user_prompt, config=config,
@@ -979,7 +1040,7 @@ class MangaTranslator:
                             self._name_glossary[src] = per
 
                 missing = [r for r in regions if not r.translated_text]
-                if missing and attempt < self.max_retries:
+                if missing and attempt < max_attempts:
                     print(f"    [!] {len(missing)} حباب بدون ترجمه؛ تلاش مجدد...")
                     payload2 = [{"id": r.id, "text": r.source_text} for r in missing]
                     user_prompt = (
@@ -1013,36 +1074,77 @@ class MangaTranslator:
                     ) from e
 
                 if self._is_model_unavailable_error(e):
-                    print(f"    [!] مدل موقتاً در دسترس نیست (۵۰۳/high demand). تست کلید بعدی...")
-                    if self._switch_to_next_key(reason="۵۰۳ UNAVAILABLE", cycle=True):
-                        time.sleep(min(delay, 5))
+                    print(f"    [!] مدل «{self.model_name}» در دسترس نیست → تعویض فوری")
+                    if self._switch_to_next_model(reason="UNAVAILABLE"):
+                        time.sleep(0.3)
                         continue
-                    print(f"    [!] فقط یک کلید موجوده و ۵۰۳ گرفت؛ کمی صبر و تلاش مجدد...")
+                    print(f"    [!] همه مدل‌ها تست شدن؛ کلید بعدی...")
+                    self._model_index = 0
+                    self.model_name = self._model_cascade[0]
+                    if self._switch_to_next_key(reason="UNAVAILABLE", cycle=True):
+                        time.sleep(0.5)
+                        continue
+                    time.sleep(min(delay, 2))
+                    delay = min(delay * 1.5, 10)
+                    continue
             except Exception as e:
                 last_err = e
                 if self._is_model_unavailable_error(e):
-                    print(f"    [!] خطای در دسترس نبودن مدل. تست کلید بعدی...")
-                    if self._switch_to_next_key(reason="UNAVAILABLE", cycle=True):
-                        time.sleep(min(delay, 5))
+                    print(f"    [!] مدل «{self.model_name}» در دسترس نیست → تعویض فوری")
+                    if self._switch_to_next_model(reason="UNAVAILABLE"):
+                        time.sleep(0.3)
                         continue
+                    self._model_index = 0
+                    self.model_name = self._model_cascade[0]
+                    if self._switch_to_next_key(reason="UNAVAILABLE", cycle=True):
+                        time.sleep(0.5)
+                        continue
+                    time.sleep(min(delay, 2))
+                    continue
                 if self._is_banned_or_invalid_key_error(e):
                     if self._remove_current_key_and_switch(reason=str(e)[:120]):
                         continue
 
-            print(f"    [!] تلاش {attempt}/{self.max_retries} برای ترجمه ناموفق بود: {last_err}")
-            if attempt < self.max_retries:
+            print(f"    [!] تلاش {attempt}/{max_attempts} ناموفق: {last_err}")
+            if attempt < max_attempts:
                 time.sleep(delay)
-                delay = min(delay * 2, 30)
+                delay = min(delay * 1.8, 15)
 
-        print(f"    [!] ترجمه‌ی این بخش بعد از {self.max_retries} تلاش ناموفق موند.")
+        print(f"    [!] ترجمه‌ی این بخش بعد از {max_attempts} تلاش ناموفق موند.")
 
     @staticmethod
-    def _shape_farsi(text: str) -> str:
-        reshaped = arabic_reshaper.reshape(text)
-        return get_display(reshaped)
+    def _shape_farsi(text: str, use_bidi: bool = True) -> str:
+        if not text:
+            return text
+        try:
+            reshaped = arabic_reshaper.reshape(text)
+        except Exception:
+            reshaped = text
+        if use_bidi:
+            return get_display(reshaped)
+        return reshaped
 
-    def _load_font(self, size: int) -> ImageFont.FreeTypeFont:
-        return ImageFont.truetype(self.font_path, size, layout_engine=ImageFont.Layout.BASIC)
+    def _load_font(self, size: int):
+        path = self.font_path
+        engines = []
+        if hasattr(ImageFont, "Layout") and hasattr(ImageFont.Layout, "RAQM"):
+            engines.append(("raqm", ImageFont.Layout.RAQM))
+        engines.append(("basic", ImageFont.Layout.BASIC))
+
+        last_err = None
+        for name, engine in engines:
+            try:
+                font = ImageFont.truetype(path, size, layout_engine=engine)
+                return font, (name == "basic")
+            except Exception as e:
+                last_err = e
+                continue
+
+        try:
+            font = ImageFont.truetype(path, size)
+            return font, True
+        except Exception:
+            raise RuntimeError(f"نتوانست فونت بارگذاری کند: {path}") from last_err
 
     @staticmethod
     def _stroke_width_for(size: int) -> int:
@@ -1050,20 +1152,20 @@ class MangaTranslator:
 
     def _wrap_and_fit(
         self, draw: ImageDraw.ImageDraw, text: str, max_w: int, max_h: int
-    ) -> Tuple[ImageFont.FreeTypeFont, List[str], int]:
+    ) -> Tuple[ImageFont.FreeTypeFont, List[str], int, bool]:
         words = text.split()
         if not words:
             words = [""]
 
         def wrap_at(size: int):
-            font = self._load_font(size)
+            font, use_bidi = self._load_font(size)
             sw = self._stroke_width_for(size)
             lines: List[str] = []
             current = ""
             for word in words:
                 candidate = f"{current} {word}".strip()
-                w = draw.textbbox((0, 0), self._shape_farsi(candidate), font=font,
-                                   stroke_width=sw)[2]
+                shaped = self._shape_farsi(candidate, use_bidi=use_bidi)
+                w = draw.textbbox((0, 0), shaped, font=font, stroke_width=sw)[2]
                 if w <= max_w or not current:
                     current = candidate
                 else:
@@ -1076,19 +1178,24 @@ class MangaTranslator:
             total_h = line_h * len(lines)
             widest = max(
                 (
-                    draw.textbbox((0, 0), self._shape_farsi(l), font=font, stroke_width=sw)[2]
+                    draw.textbbox(
+                        (0, 0),
+                        self._shape_farsi(l, use_bidi=use_bidi),
+                        font=font,
+                        stroke_width=sw,
+                    )[2]
                     for l in lines
                 ),
                 default=0,
             )
-            return font, lines, sw, total_h, widest
+            return font, lines, sw, total_h, widest, use_bidi
 
         smallest_attempt = None
         for size in range(52, 9, -1):
-            font, lines, sw, total_h, widest = wrap_at(size)
-            smallest_attempt = (font, lines, sw)
+            font, lines, sw, total_h, widest, use_bidi = wrap_at(size)
+            smallest_attempt = (font, lines, sw, use_bidi)
             if total_h <= max_h and widest <= max_w:
-                return font, lines, sw
+                return font, lines, sw, use_bidi
 
         return smallest_attempt
 
@@ -1168,7 +1275,9 @@ class MangaTranslator:
             box_w = max(12, w - 2 * pad)
             box_h = max(12, h - 2 * pad)
 
-            font, lines, sw = self._wrap_and_fit(draw, region.translated_text, box_w, box_h)
+            font, lines, sw, use_bidi = self._wrap_and_fit(
+                draw, region.translated_text, box_w, box_h
+            )
             text_rgb, stroke_rgb = self._pick_text_and_stroke(image, original_image, region)
 
             angle = getattr(region, "angle", 0.0)
@@ -1179,7 +1288,7 @@ class MangaTranslator:
                 start_y = y + pad + max(0, (box_h - total_h) // 2)
 
                 for i, line in enumerate(lines):
-                    shaped = self._shape_farsi(line)
+                    shaped = self._shape_farsi(line, use_bidi=use_bidi)
                     line_w = draw.textbbox((0, 0), shaped, font=font, stroke_width=sw)[2]
                     line_x = x + pad + max(0, (box_w - line_w) // 2)
                     line_y = start_y + i * line_h
@@ -1196,7 +1305,7 @@ class MangaTranslator:
                 tmp_h = line_h * len(lines) + 30
                 tmp_w = 0
                 for line in lines:
-                    shaped = self._shape_farsi(line)
+                    shaped = self._shape_farsi(line, use_bidi=use_bidi)
                     lw = draw.textbbox((0, 0), shaped, font=font, stroke_width=sw)[2]
                     tmp_w = max(tmp_w, lw)
                 tmp_w += 40
@@ -1205,7 +1314,7 @@ class MangaTranslator:
                 tmp_draw = ImageDraw.Draw(tmp)
 
                 for i, line in enumerate(lines):
-                    shaped = self._shape_farsi(line)
+                    shaped = self._shape_farsi(line, use_bidi=use_bidi)
                     line_w = tmp_draw.textbbox((0, 0), shaped, font=font, stroke_width=sw)[2]
                     tx = (tmp_w - line_w) // 2
                     ty = 15 + i * line_h
@@ -2063,13 +2172,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="کلید Gemini API. می‌تونی چند بار بنویسی یا با کاما جدا کنی. "
                         "اگه یکی تموم شد خودکار می‌ره بعدی. "
                         "یا env: GEMINI_API_KEY=key1,key2,key3")
-    p.add_argument("--font", required=True)
+    p.add_argument("--font", default=None,
+                   help="مسیر فونت فارسی. مثال: --font fonts/Vazirmatn-Regular.ttf")
     p.add_argument("--ocr-lang", nargs="+", default=["en"],
                    help="زبان‌های OCR. برای نسخه‌ی انگلیسی: en | کره‌ای: ko en | ژاپنی: ja en")
-    p.add_argument("--model", default="gemini-flash-latest",
-                   help="مدل Gemini برای ترجمه. پیش‌فرض gemini-flash-latest برای لحن "
-                        "محاوره‌ای‌تر و طبیعی‌تره؛ اگه به کوتای رایگان بیشتری نیاز داری "
-                        "(به قیمت لحن رسمی‌تر) با --model gemini-flash-lite-latest عوضش کن.")
+    p.add_argument("--model", default="gemini-2.5-flash",
+                   help="مدل Gemini برای ترجمه. پیش‌فرض gemini-2.5-flash. "
+                        "اگه در دسترس نبود خودکار می‌ره سراغ gemini-3.7-flash / 3.6 / 3.5 و بعد مدل‌های سبک‌تر. "
+                        "برای کوتای بیشتر: --model gemini-2.5-flash-lite")
     p.add_argument("--reading-order", choices=["rtl", "ltr"], default="rtl")
     p.add_argument("--gpu", dest="gpu", action="store_true", default=None,
                    help="اجبار به استفاده از GPU (پیش‌فرض: خودکار تشخیص داده می‌شه)")
@@ -2129,6 +2239,10 @@ def main():
     output_path = MangaTranslator._auto_output_path(args.input, args.output)
     if output_path != args.output:
         print(f"[*] نام خروجی خودکار: {output_path}")
+
+    if not args.font:
+        print("خطا: --font لازم است. مثال: --font fonts/Vazirmatn-Regular.ttf", file=sys.stderr)
+        sys.exit(1)
 
     translator = MangaTranslator(
         gemini_api_key=unique_keys,
