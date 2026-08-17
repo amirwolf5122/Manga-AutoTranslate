@@ -1079,26 +1079,38 @@ class MangaTranslator:
             hgap = abs(cx1 - cx2) - (w1 + w2) / 2.0
             avg_h = max(1.0, (h1 + h2) / 2.0)
             xi1, xi2 = max(x1, x2), min(x1 + w1, x2 + w2)
-            h_overlap_ratio = max(0.0, xi2 - xi1) / max(1.0, min(w1, w2))
-            return vgap, hgap, avg_h, h_overlap_ratio, abs(cx1 - cx2), max(h1, h2), min(h1, h2)
+            
+            h_overlap_min = max(0.0, xi2 - xi1) / max(1.0, min(w1, w2))
+            h_overlap_max = max(0.0, xi2 - xi1) / max(1.0, max(w1, w2))
+            return vgap, hgap, avg_h, h_overlap_min, h_overlap_max, abs(cx1 - cx2), max(h1, h2), min(h1, h2), min(w1, w2)
 
         def likely_same_bubble(r1, r2):
             
-            vgap, hgap, avg_h, h_overlap_ratio, cx_dist, h_max, h_min = pair_metrics(r1, r2)
-            if h_max > h_min * 2.4:
+            vgap, hgap, avg_h, h_ov_min, h_ov_max, cx_dist, h_max, h_min, w_min = pair_metrics(r1, r2)
+            if h_max > h_min * 2.3:
                 return False
+
             
-            abs_max_vgap = max(55.0, avg_h * 1.6)
-            if -avg_h * 0.35 <= vgap <= abs_max_vgap:
-                if h_overlap_ratio >= 0.22 or cx_dist <= max((r1[2] + r2[2]) * 0.35, 48):
+            if cx_dist > max(w_min * 0.55, 40):
+                
+                if h_ov_max < 0.45:
+                    return False
+
+            
+            abs_max_vgap = max(42.0, avg_h * 1.25)
+            if -avg_h * 0.3 <= vgap <= abs_max_vgap:
+                if h_ov_min >= 0.40 and h_ov_max >= 0.28:
                     return True
-            if hgap <= max(self.group_margin * 3, avg_h * 0.75, 20) and abs(
-                (r1[1] + r1[3] / 2) - (r2[1] + r2[3] / 2)
-            ) <= avg_h * 0.6:
-                return True
+                if cx_dist <= max(w_min * 0.35, 28) and h_ov_min >= 0.25:
+                    return True
+
+            
+            if hgap <= max(self.group_margin * 2, avg_h * 0.55, 14):
+                if abs((r1[1] + r1[3] / 2) - (r2[1] + r2[3] / 2)) <= avg_h * 0.45:
+                    return True
             return False
 
-        merge_margin = max(self.group_margin, 14)
+        merge_margin = max(self.group_margin, 10)
         for i in range(n):
             for j in range(i + 1, n):
                 if expanded_overlap(rects[i], rects[j], merge_margin) and likely_same_bubble(rects[i], rects[j]):
@@ -1108,12 +1120,8 @@ class MangaTranslator:
         order = sorted(range(n), key=lambda i: (rects[i][1] + rects[i][3] / 2.0, rects[i][0]))
         for a in range(len(order) - 1):
             i, j = order[a], order[a + 1]
-            vgap, hgap, avg_h, h_overlap_ratio, cx_dist, h_max, h_min = pair_metrics(rects[i], rects[j])
-            if h_max > h_min * 2.4:
-                continue
-            if -avg_h * 0.35 <= vgap <= max(50.0, avg_h * 1.5):
-                if h_overlap_ratio >= 0.18 or cx_dist <= max((rects[i][2] + rects[j][2]) * 0.4, 56):
-                    union(i, j)
+            if likely_same_bubble(rects[i], rects[j]):
+                union(i, j)
 
         groups = {}
         for i in range(n):
