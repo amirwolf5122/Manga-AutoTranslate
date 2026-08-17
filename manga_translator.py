@@ -34,14 +34,23 @@ except ImportError:
           "دستور: pip install arabic-reshaper python-bidi", file=sys.stderr)
     raise
 
+_HAS_GEMINI = False
 try:
     from google import genai
     from google.genai import types as genai_types
     from google.genai import errors as genai_errors
+    _HAS_GEMINI = True
 except ImportError:
-    print("خطا: کتابخانه google-genai نصب نیست.\nدستور: pip install google-genai",
-          file=sys.stderr)
-    raise
+    genai = None
+    genai_types = None
+    genai_errors = None
+
+_HAS_OPENAI = False
+try:
+    from openai import OpenAI
+    _HAS_OPENAI = True
+except ImportError:
+    OpenAI = None
 
 try:
     from paddleocr import PaddleOCR
@@ -56,6 +65,68 @@ try:
     _HAS_LAMA = True
 except ImportError:
     pass
+
+PROVIDER_PRESETS = {
+    "gemini": {
+        "type": "gemini",
+        "default_model": "gemini-flash-latest",
+        "env_key": "GEMINI_API_KEY",
+    },
+    "openai": {
+        "type": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+        "env_key": "OPENAI_API_KEY",
+    },
+    "chatgpt": {
+        "type": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "default_model": "gpt-4o-mini",
+        "env_key": "OPENAI_API_KEY",
+    },
+    "deepseek": {
+        "type": "openai",
+        "base_url": "https://api.deepseek.com",
+        "default_model": "deepseek-chat",
+        "env_key": "DEEPSEEK_API_KEY",
+    },
+    "groq": {
+        "type": "openai",
+        "base_url": "https://api.groq.com/openai/v1",
+        "default_model": "llama-3.3-70b-versatile",
+        "env_key": "GROQ_API_KEY",
+    },
+    "xai": {
+        "type": "openai",
+        "base_url": "https://api.x.ai/v1",
+        "default_model": "grok-2-latest",
+        "env_key": "XAI_API_KEY",
+    },
+    "grok": {
+        "type": "openai",
+        "base_url": "https://api.x.ai/v1",
+        "default_model": "grok-2-latest",
+        "env_key": "XAI_API_KEY",
+    },
+    "together": {
+        "type": "openai",
+        "base_url": "https://api.together.xyz/v1",
+        "default_model": "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "env_key": "TOGETHER_API_KEY",
+    },
+    "openrouter": {
+        "type": "openai",
+        "base_url": "https://openrouter.ai/api/v1",
+        "default_model": "google/gemini-2.0-flash-001",
+        "env_key": "OPENROUTER_API_KEY",
+    },
+    "ollama": {
+        "type": "openai",
+        "base_url": "http://localhost:11434/v1",
+        "default_model": "llama3.2",
+        "env_key": "OLLAMA_API_KEY",
+    },
+}
 
 
 class GeminiQuotaExhausted(Exception):
@@ -162,6 +233,44 @@ HANGUL_RE = re.compile(r"[\uac00-\ud7a3]+")
 PURE_HANGUL_SFX_RE = re.compile(r"^[\uac00-\ud7a3\s!?.…~\-]+$")
 
 
+def uncensor_swears(text: str) -> str:
+    if not text:
+        return text
+
+    replacements = [
+        (r"\bf+u+[*@#$%^&._\-]*c+k+i+n+g?\b", "fucking"),
+        (r"\bf+u+[*@#$%^&._\-]*c+k+\b", "fuck"),
+        (r"\bf+[*@#$%^&._\-]+c+k+\b", "fuck"),
+        (r"\bs+h+[*@#$%^&._\-]*i+t+\b", "shit"),
+        (r"\bs+h+[*@#$%^&._\-]+t+\b", "shit"),
+        (r"\bb+i+[*@#$%^&._\-]*t+c+h+\b", "bitch"),
+        (r"\bb+[*@#$%^&._\-]+t+c+h+\b", "bitch"),
+        (r"\ba+s+s+[*@#$%^&._\-]*h+o+l+e+\b", "asshole"),
+        (r"\ba+r+s+e+[*@#$%^&._\-]*h+o+l+e+\b", "arsehole"),
+        (r"\bd+a+m+n+\b", "damn"),
+        (r"\bd+a+m+m+i+t+\b", "dammit"),
+        (r"\bd+i+c+k+\b", "dick"),
+        (r"\bc+o+c+k+\b", "cock"),
+        (r"\bp+u+s+s+y+\b", "pussy"),
+        (r"\bc+u+n+t+\b", "cunt"),
+        (r"\bm+o+t+h+e+r+f+u+c+k+e+r+\b", "motherfucker"),
+        (r"\bm+o+t+h+e+r+[*@#$%^&._\-]*f+u+c+k+e+r+\b", "motherfucker"),
+        (r"\bb+a+s+t+a+r+d+\b", "bastard"),
+        (r"\bh+e+l+l+\b", "hell"),
+        (r"\bf[*@#$%^&._\-]{1,4}ck\b", "fuck"),
+        (r"\bsh[*@#$%^&._\-]{1,4}t\b", "shit"),
+        (r"\bb[*@#$%^&._\-]{1,4}tch\b", "bitch"),
+        (r"\ba[*@#$%^&._\-]{1,4}shole\b", "asshole"),
+        (r"\bd[*@#$%^&._\-]{1,4}ck\b", "dick"),
+        (r"\bc[*@#$%^&._\-]{1,4}nt\b", "cunt"),
+    ]
+
+    result = text
+    for pattern, repl in replacements:
+        result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
+    return result
+
+
 class MangaTranslator:
     _LAMA_MIN_VRAM_GB = 3.5
 
@@ -236,9 +345,11 @@ class MangaTranslator:
 
     def __init__(
         self,
-        gemini_api_key,
+        api_key,
+        provider: str = "gemini",
         ocr_langs: List[str] = None,
-        model_name: str = "gemini-flash-latest",
+        model_name: Optional[str] = None,
+        api_base: Optional[str] = None,
         font_path: Optional[str] = None,
         reading_order: str = "rtl",
         gpu: Optional[bool] = None,
@@ -259,19 +370,34 @@ class MangaTranslator:
         two_pass_ocr: bool = True,
         max_output_width: Optional[int] = None
     ):
-        if isinstance(gemini_api_key, str):
-            keys = [k.strip() for k in gemini_api_key.replace(";", ",").split(",") if k.strip()]
+        provider = (provider or "gemini").lower().strip()
+        if provider not in PROVIDER_PRESETS:
+            raise ValueError(
+                f"ارائه‌دهندهٔ ناشناخته: «{provider}». "
+                f"گزینه‌ها: {', '.join(PROVIDER_PRESETS.keys())}"
+            )
+        self.provider = provider
+        self.provider_cfg = PROVIDER_PRESETS[provider]
+        self.provider_type = self.provider_cfg["type"]
+
+        if isinstance(api_key, str):
+            keys = [k.strip() for k in api_key.replace(";", ",").split(",") if k.strip()]
         else:
-            keys = [k.strip() for k in gemini_api_key if k and str(k).strip()]
+            keys = [k.strip() for k in api_key if k and str(k).strip()]
         random.shuffle(keys)
+        if not keys and self.provider != "ollama":
+            raise ValueError(f"حداقل یک کلید API برای {provider} لازم است.")
         if not keys:
-            raise ValueError("حداقل یک کلید Gemini API لازم است.")
+            keys = ["ollama"]
         self._api_keys: List[str] = keys
         self._key_index: int = 0
         self._ocr_lock = threading.Lock()
-        self.model_name = model_name
+
+        self.model_name = (model_name or self.provider_cfg.get("default_model") or "gemini-flash-latest").strip()
         self._model_cascade: List[str] = []
         self._model_index: int = 0
+        self.api_base = api_base or self.provider_cfg.get("base_url")
+
         self.font_path = font_path
         self.reading_order = reading_order
         self.group_margin = group_margin
@@ -295,6 +421,8 @@ class MangaTranslator:
         self._lama = None
         self._title_skip_patterns: List[str] = []
         MangaTranslator._title_skip_patterns = []
+        self.client = None
+        self.openai_client = None
 
         if not font_path or not os.path.isfile(font_path):
             raise FileNotFoundError(
@@ -396,17 +524,38 @@ class MangaTranslator:
         print(f"[*] مدل PaddleOCR با زبان '{main_lang}' و دستگاه '{device}' بارگذاری شد "
               f"(MKLDNN خاموش، workers={self.max_workers}).")
 
-        self.client = genai.Client(api_key=self._api_keys[0])
-        self._model_cascade = self._build_model_cascade(self.model_name, self.client)
-        self.model_name = self._model_cascade[0]
-        cascade_info = f" | cascade: {' → '.join(self._model_cascade[:5])}" + (
-            "…" if len(self._model_cascade) > 5 else ""
-        )
-        if len(self._api_keys) > 1:
-            print(f"[*] مدل ترجمه: {self.model_name}{cascade_info} | "
-                  f"{len(self._api_keys)} کلید API (جابه‌جایی خودکار روی سهمیه/۵۰۳/خطا)")
+        if self.provider_type == "gemini":
+            if not _HAS_GEMINI:
+                raise ImportError(
+                    "برای استفاده از Gemini باید google-genai نصب باشد:\n"
+                    "  pip install google-genai"
+                )
+            self.client = genai.Client(api_key=self._api_keys[0])
+            self._model_cascade = self._build_model_cascade(self.model_name, self.client)
+            self.model_name = self._model_cascade[0]
+            cascade_info = f" | cascade: {' → '.join(self._model_cascade[:5])}" + (
+                "…" if len(self._model_cascade) > 5 else ""
+            )
+            if len(self._api_keys) > 1:
+                print(f"[*] ارائه‌دهنده: Gemini | مدل: {self.model_name}{cascade_info} | "
+                      f"{len(self._api_keys)} کلید API")
+            else:
+                print(f"[*] ارائه‌دهنده: Gemini | مدل: {self.model_name}{cascade_info}")
         else:
-            print(f"[*] مدل ترجمه: {self.model_name}{cascade_info}")
+            if not _HAS_OPENAI:
+                raise ImportError(
+                    "برای استفاده از OpenAI / DeepSeek / Groq / ... باید openai نصب باشد:\n"
+                    "  pip install openai"
+                )
+            self.openai_client = OpenAI(
+                api_key=self._api_keys[0],
+                base_url=self.api_base,
+            )
+            self._model_cascade = [self.model_name]
+            print(f"[*] ارائه‌دهنده: {self.provider} | مدل: {self.model_name} | "
+                  f"base: {self.api_base}")
+            if len(self._api_keys) > 1:
+                print(f"    {len(self._api_keys)} کلید API (جابه‌جایی خودکار)")
 
     def _get_lama(self):
         if self._lama is None and self.use_lama:
@@ -647,7 +796,7 @@ class MangaTranslator:
                 return False
         self._key_index = next_idx
         key = self._api_keys[self._key_index]
-        self.client = genai.Client(api_key=key)
+        self._apply_api_key(key)
         extra = f" ({reason})" if reason else ""
         print(f"    [*] کلید API شماره {self._key_index + 1}/{len(self._api_keys)} فعال شد{extra}.")
         return True
@@ -664,9 +813,15 @@ class MangaTranslator:
         if self._key_index >= len(self._api_keys):
             self._key_index = 0
         key = self._api_keys[self._key_index]
-        self.client = genai.Client(api_key=key)
+        self._apply_api_key(key)
         print(f"    [*] کلید API شماره {self._key_index + 1}/{len(self._api_keys)} فعال شد.")
         return True
+
+    def _apply_api_key(self, key: str) -> None:
+        if self.provider_type == "gemini":
+            self.client = genai.Client(api_key=key)
+        else:
+            self.openai_client = OpenAI(api_key=key, base_url=self.api_base)
 
     @staticmethod
     def _clahe_enhance(image: np.ndarray) -> np.ndarray:
@@ -1116,34 +1271,53 @@ class MangaTranslator:
         msg = str(err)
         return "RESOURCE_EXHAUSTED" in msg and ("PerDay" in msg or "RequestsPerDay" in msg)
 
-    def translate_regions(self, regions: List[TextRegion]) -> None:
-        if not regions:
-            return
-
-        payload = [{"id": r.id, "text": r.source_text} for r in regions]
-        '''system_instruction = (
+    def _get_system_instruction(self) -> str:
+        return (
             "دیالوگ مانهوا رو فارسیِ کوچه‌بازار بنویس؛ مثل حرف زدن واقعی، نه کتاب.\n"
             "شکسته (رو، شون، ه، می‌کنه). کوتاه و واضح.\n"
             "فحش طبیعی و کامل: What the fuck are you doing?! → چه گوهی داری می‌خوری?! | "
             "fuck you → گاییدمت | shit → گه | bastard → حرومزاده.\n"
+            "اگر متن اصلی فحش سانسور شده داشت (مثل fu*ck یا sh*t) حتماً کاملش کن و بعد ترجمه کن.\n"
             "ممنوع: می‌باشد، است، را، خواهید، ایشان، این‌گونه، متأسفانه.\n"
-            "مثال: I didn't come to negotiate → نیومدم چونه بزنم | Hold on!! → وایسا!!\n"
-            "اسم خاص نویسه‌گردانی. OCR خراب → معنی حدس بزن. فقط JSON."
-        )'''
-        system_instruction = (
-            "دیالوگ مانهوا رو فارسیِ کوچه‌بازار بنویس؛ مثل حرف زدن واقعی، نه کتاب.\n"
-            "شکسته (رو، شون، ه، می‌کنه). کوتاه و واضح.\n"
-            "فحش طبیعی و کامل: What the fuck are you doing?! → چه گوهی داری می‌خوری?! | "
-            "قابل خوندن باشه\n"
-            "ممنوع: می‌باشد، است، را، خواهید، ایشان، این‌گونه، متأسفانه.\n"
-            "اسم خاص نویسه‌گردانی. OCR خراب → معنی حدس بزن. فقط JSON."
-        )
-        user_prompt = (
-            "دیالوگ‌های صفحه مانهوا (ممکنه OCR خراب باشه). "
-            "فارسی خودمونی، فحش کامل، کتابی ممنوع.\n"
-            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+            "اسم خاص نویسه‌گردانی. OCR خراب → معنی حدس بزن.\n"
+            "خروجی فقط یک آرایه JSON باشد. هر آیتم: {\"id\": عدد, \"translation\": \"متن فارسی\", "
+            "\"names\": [{\"source\": \"...\", \"persian\": \"...\"}] }\n"
+            "هیچ متن اضافه یا توضیح ننویس."
         )
 
+    def _parse_translation_response(self, text: str, regions: List[TextRegion]) -> bool:
+        text = text.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text)
+            text = re.sub(r"\s*```$", "", text)
+        try:
+            results = json.loads(text)
+        except json.JSONDecodeError:
+            m = re.search(r"\[[\s\S]*\]", text)
+            if not m:
+                raise
+            results = json.loads(m.group(0))
+
+        if not isinstance(results, list):
+            raise ValueError("پاسخ مدل آرایه نیست.")
+
+        by_id = {item["id"]: item.get("translation", "") for item in results if "id" in item}
+        applied = 0
+        for region in regions:
+            t = by_id.get(region.id, "").strip()
+            if t:
+                region.translated_text = t
+                applied += 1
+
+        for item in results:
+            for nm in (item.get("names") or []):
+                src = (nm.get("source") or "").strip()
+                per = (nm.get("persian") or "").strip()
+                if src and per:
+                    self._name_glossary[src] = per
+        return applied > 0
+
+    def _translate_with_gemini(self, user_prompt: str, system_instruction: str) -> str:
         config = genai_types.GenerateContentConfig(
             system_instruction=system_instruction,
             response_mime_type="application/json",
@@ -1171,105 +1345,138 @@ class MangaTranslator:
                 },
             },
         )
+        response = self.client.models.generate_content(
+            model=self.model_name, contents=user_prompt, config=config,
+        )
+        text = response.text
+        if not text:
+            raise RuntimeError("پاسخ خالی از Gemini دریافت شد.")
+        return text
+
+    def _translate_with_openai(self, user_prompt: str, system_instruction: str) -> str:
+        kwargs = dict(
+            model=self.model_name,
+            messages=[
+                {"role": "system", "content": system_instruction},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=self.translation_temperature,
+        )
+        mlow = self.model_name.lower()
+        if any(x in mlow for x in ("gpt-4", "gpt-3.5", "gpt-5", "o1", "o3", "o4")):
+            kwargs["response_format"] = {"type": "json_object"}
+
+        resp = self.openai_client.chat.completions.create(**kwargs)
+        text = resp.choices[0].message.content
+        if not text:
+            raise RuntimeError(f"پاسخ خالی از {self.provider} دریافت شد.")
+        return text
+
+    def translate_regions(self, regions: List[TextRegion]) -> None:
+        if not regions:
+            return
+
+        payload = [{"id": r.id, "text": uncensor_swears(r.source_text)} for r in regions]
+        system_instruction = self._get_system_instruction()
+        user_prompt = (
+            "دیالوگ‌های صفحه مانهوا (ممکنه OCR خراب باشه). "
+            "فارسی خودمونی، فحش کامل، کتابی ممنوع.\n"
+            "خروجی فقط JSON آرایه:\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
+        )
 
         delay = 3.0
         last_err = None
+        work_regions = list(regions)
+
         for attempt in range(1, self.max_retries + 1):
             try:
-                response = self.client.models.generate_content(
-                    model=self.model_name, contents=user_prompt, config=config,
-                )
-                text = response.text
-                if not text:
-                    raise RuntimeError("پاسخ خالی از Gemini دریافت شد.")
-                results = json.loads(text)
+                if self.provider_type == "gemini":
+                    text = self._translate_with_gemini(user_prompt, system_instruction)
+                else:
+                    text = self._translate_with_openai(user_prompt, system_instruction)
 
-                by_id = {item["id"]: item.get("translation", "") for item in results}
-                for region in regions:
-                    t = by_id.get(region.id, "").strip()
-                    if t:
-                        region.translated_text = t
+                try:
+                    cleaned = text.strip()
+                    if cleaned.startswith("```"):
+                        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
+                        cleaned = re.sub(r"\s*```$", "", cleaned)
+                    parsed = json.loads(cleaned.strip())
+                    if isinstance(parsed, dict):
+                        for key in ("translations", "results", "data", "items"):
+                            if key in parsed and isinstance(parsed[key], list):
+                                text = json.dumps(parsed[key], ensure_ascii=False)
+                                break
+                        else:
+                            if "id" in parsed and "translation" in parsed:
+                                text = json.dumps([parsed], ensure_ascii=False)
+                except Exception:
+                    pass
 
-                for item in results:
-                    for nm in (item.get("names") or []):
-                        src = (nm.get("source") or "").strip()
-                        per = (nm.get("persian") or "").strip()
-                        if src and per:
-                            self._name_glossary[src] = per
+                self._parse_translation_response(text, work_regions)
 
-                missing = [r for r in regions if not r.translated_text]
+                missing = [r for r in work_regions if not r.translated_text]
                 if missing and attempt < self.max_retries:
                     print(f"    [!] {len(missing)} حباب بدون ترجمه؛ تلاش مجدد...")
-                    payload2 = [{"id": r.id, "text": r.source_text} for r in missing]
+                    payload2 = [{"id": r.id, "text": uncensor_swears(r.source_text)} for r in missing]
                     user_prompt = (
                         "اینا موندن ترجمه بشن. همون لحن خیابونی خودمونی؛ "
-                        "فحش کامل، کتابی ممنوع:\n"
+                        "فحش کامل، کتابی ممنوع. فقط JSON آرایه:\n"
                         f"{json.dumps(payload2, ensure_ascii=False, indent=2)}"
                     )
-                    regions = missing
+                    work_regions = missing
                     continue
 
-                print("[فاز ۳ - تفکر و ترجمه] دریافت پاسخ کامل از مدل انجام شد.")
+                print(f"[فاز ۳ - ترجمه با {self.provider}/{self.model_name}] پاسخ کامل دریافت شد.")
                 if self.request_delay > 0:
                     time.sleep(self.request_delay)
                 return
-            except genai_errors.ClientError as e:
-                last_err = e
-                if self._is_daily_quota_error(e):
-                    print(f"    [!] سهمیه‌ی کلید {self._key_index + 1}/{len(self._api_keys)} تموم شد.")
-                    if self._switch_to_next_key(reason="سهمیه روزانه"):
-                        continue
-                    raise GeminiQuotaExhausted(
-                        f"سهمیه‌ی همه‌ی {len(self._api_keys)} کلید Gemini برای مدل «{self.model_name}» تموم شده."
-                    ) from e
 
-                if self._is_banned_or_invalid_key_error(e):
-                    print(f"    [!] کلید فعلی بن یا نامعتبر تشخیص داده شد.")
-                    if self._remove_current_key_and_switch(reason=str(e)[:120]):
-                        continue
-                    raise GeminiQuotaExhausted(
-                        f"همه کلیدهای Gemini بن/نامعتبر شدن یا تموم شدن."
-                    ) from e
-
-                if self._is_model_unavailable_error(e):
-                    if self._is_model_permanently_gone(e):
-                        print(f"    [!] مدل «{self.model_name}» دیگر موجود نیست (۴۰۴/NOT_FOUND)...")
-                        if self._drop_current_model_and_switch(reason="404 NOT_FOUND"):
-                            time.sleep(0.2)
-                            continue
-                    else:
-                        print(f"    [!] مدل «{self.model_name}» موقتاً در دسترس نیست (۵۰۳/high demand)...")
-                        if self._switch_to_next_model(reason="۵۰۳ UNAVAILABLE"):
-                            time.sleep(0.3)
-                            continue
-                    if self._switch_to_next_key(reason="model unavailable", cycle=True):
-                        time.sleep(min(delay, 3))
-                        continue
-                    print(f"    [!] فقط یک کلید/مدل موجوده؛ کمی صبر و تلاش مجدد...")
             except Exception as e:
                 last_err = e
-                if self._is_model_unavailable_error(e):
-                    if self._is_model_permanently_gone(e):
-                        print(f"    [!] مدل «{self.model_name}» دیگر موجود نیست (۴۰۴)...")
-                        if self._drop_current_model_and_switch(reason="404 NOT_FOUND"):
-                            time.sleep(0.2)
+                err_str = str(e).lower()
+
+                if self.provider_type == "gemini" and _HAS_GEMINI:
+                    if isinstance(e, genai_errors.ClientError) if genai_errors else False:
+                        if self._is_daily_quota_error(e):
+                            print(f"    [!] سهمیه‌ی کلید {self._key_index + 1}/{len(self._api_keys)} تموم شد.")
+                            if self._switch_to_next_key(reason="سهمیه روزانه"):
+                                continue
+                            raise GeminiQuotaExhausted(
+                                f"سهمیه‌ی همه‌ی کلیدها تموم شده."
+                            ) from e
+                        if self._is_banned_or_invalid_key_error(e):
+                            if self._remove_current_key_and_switch(reason=str(e)[:120]):
+                                continue
+                            raise GeminiQuotaExhausted("همه کلیدها نامعتبر/بن شدند.") from e
+
+                    if self._is_model_unavailable_error(e):
+                        if self._is_model_permanently_gone(e):
+                            if self._drop_current_model_and_switch(reason="404"):
+                                time.sleep(0.2)
+                                continue
+                        else:
+                            if self._switch_to_next_model(reason="UNAVAILABLE"):
+                                time.sleep(0.3)
+                                continue
+                        if self._switch_to_next_key(reason="model unavailable", cycle=True):
+                            time.sleep(min(delay, 3))
                             continue
-                    else:
-                        print(f"    [!] خطای در دسترس نبودن مدل «{self.model_name}»...")
-                        if self._switch_to_next_model(reason="UNAVAILABLE"):
-                            time.sleep(0.3)
-                            continue
-                    if self._switch_to_next_key(reason="UNAVAILABLE", cycle=True):
-                        time.sleep(min(delay, 3))
+
+                if any(x in err_str for x in ("rate limit", "429", "quota", "insufficient_quota")):
+                    print(f"    [!] محدودیت نرخ/سهمیه ({self.provider})...")
+                    if self._switch_to_next_key(reason="rate/quota", cycle=True):
+                        time.sleep(min(delay, 5))
                         continue
-                if self._is_banned_or_invalid_key_error(e):
-                    if self._remove_current_key_and_switch(reason=str(e)[:120]):
+                if any(x in err_str for x in ("invalid api key", "authentication", "401", "403", "incorrect api key")):
+                    print(f"    [!] کلید نامعتبر ({self.provider})...")
+                    if self._remove_current_key_and_switch(reason=str(e)[:100]):
                         continue
 
-            print(f"    [!] تلاش {attempt}/{self.max_retries} برای ترجمه ناموفق بود: {last_err}")
-            if attempt < self.max_retries:
-                time.sleep(delay)
-                delay = min(delay * 2, 30)
+                print(f"    [!] تلاش {attempt}/{self.max_retries} ناموفق: {last_err}")
+                if attempt < self.max_retries:
+                    time.sleep(delay)
+                    delay = min(delay * 2, 30)
 
         print(f"    [!] ترجمه‌ی این بخش بعد از {self.max_retries} تلاش ناموفق موند.")
 
@@ -2291,67 +2498,74 @@ html, body { background: #0a0a0b; }
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="مترجم خودکار مانگا با OCR + Gemini")
+    p = argparse.ArgumentParser(
+        description="مترجم خودکار مانگا/مانهوا به فارسی — پشتیبانی از Gemini / OpenAI / DeepSeek / Groq / xAI / Ollama و ..."
+    )
     p.add_argument("-i", "--input", required=True)
     p.add_argument("-o", "--output", required=True,
-                   help="مسیر خروجی: پوشه، فایل کامل، یا فقط پسوند (.pdf / .zip / .html) "
-                        "که در این صورت نام از روی ورودی ساخته می‌شود")
+                   help="مسیر خروجی: پوشه، فایل کامل، یا فقط پسوند (.pdf / .zip / .html)")
+    p.add_argument(
+        "--provider",
+        default="gemini",
+        choices=list(PROVIDER_PRESETS.keys()),
+        help="ارائه‌دهنده AI: gemini | openai | chatgpt | deepseek | groq | xai | grok | together | openrouter | ollama"
+    )
     p.add_argument("--api-key", action="append", default=None,
-                   help="کلید Gemini API. می‌تونی چند بار بنویسی یا با کاما جدا کنی. "
-                        "اگه یکی تموم شد خودکار می‌ره بعدی. "
-                        "یا env: GEMINI_API_KEY=key1,key2,key3")
+                   help="کلید API. چندبار یا با کاما. env متناظر هم خوانده می‌شود")
+    p.add_argument("--api-base", default=None,
+                   help="آدرس پایه API (اختیاری)")
     p.add_argument("--font", required=True)
     p.add_argument("--ocr-lang", nargs="+", default=["en"],
-                   help="زبان‌های OCR. برای نسخه‌ی انگلیسی: en | کره‌ای: ko en | ژاپنی: ja en")
-    p.add_argument("--model", default="gemini-flash-latest",
-                   help="مدل Gemini برای ترجمه. پیش‌فرض gemini-flash-latest برای لحن "
-                        "محاوره‌ای‌تر و طبیعی‌تره؛ اگه به کوتای رایگان بیشتری نیاز داری "
-                        "(به قیمت لحن رسمی‌تر) با --model gemini-flash-lite-latest عوضش کن.")
+                   help="زبان‌های OCR. en | ko en | ja en")
+    p.add_argument("--model", default=None,
+                   help="نام مدل. اگر ندهی از پیش‌فرض provider استفاده می‌شود")
     p.add_argument("--reading-order", choices=["rtl", "ltr"], default="rtl")
-    p.add_argument("--gpu", dest="gpu", action="store_true", default=None,
-                   help="اجبار به استفاده از GPU (پیش‌فرض: خودکار تشخیص داده می‌شه)")
-    p.add_argument("--cpu", dest="gpu", action="store_false",
-                   help="اجبار به استفاده از CPU حتی اگه GPU در دسترس باشه")
+    p.add_argument("--gpu", dest="gpu", action="store_true", default=None)
+    p.add_argument("--cpu", dest="gpu", action="store_false")
     p.add_argument("--no-resume", action="store_true")
-    p.add_argument("--keep-old", action="store_true",
-                   help="کش و خروجی فصل‌های قبلی را پاک نکن (پیش‌فرض: پاک می‌شوند)")
+    p.add_argument("--keep-old", action="store_true")
     p.add_argument("--request-delay", type=float, default=0.0)
     p.add_argument("--max-retries", type=int, default=4)
     p.add_argument("--max-chunk-height", type=int, default=3600)
     p.add_argument("--img-format", choices=["webp", "png", "jpg"], default="jpg")
-    p.add_argument("--quality", type=int, default=80,
-                   help="کیفیت فشرده‌سازی خروجی (۱-۱۰۰)؛ برای حجم کمتر عدد رو پایین‌تر بیار")
-    p.add_argument("--max-width", type=int, default=900,
-                   help="عرض ثابت همه تصاویر خروجی (پیکسل). پیش‌فرض ۹۰۰. "
-                        "برای غیرفعال کردن: --max-width 0")
+    p.add_argument("--quality", type=int, default=80)
+    p.add_argument("--max-width", type=int, default=900)
     p.add_argument("--min-confidence", type=float, default=0.12)
-    p.add_argument("--workers", type=int, default=1,
-                   help="تعداد تیکه‌های موازی برای OCR (پیش‌فرض: ۱ برای پایداری روی CPU)")
-    p.add_argument("--mask-padding", type=int, default=3,
-                   help="حداقل حاشیه‌ی ثابت (پیکسل) دور حروف هنگام پاک‌سازی")
-    p.add_argument("--pad-ratio", type=float, default=0.06,
-                   help="حاشیه‌ی نسبی دور حروف؛ کم نگه دار تا شکل حباب خراب نشه")
-    p.add_argument("--inpaint-radius", type=int, default=3,
-                   help="شعاع inpaint برای حالت OpenCV")
-    p.add_argument("--mag-ratio", type=float, default=1.35,
-                   help="ضریب بزرگ‌نمایی EasyOCR؛ بالاتر = متن ریزتر ولی کندتر")
-    p.add_argument("--no-two-pass-ocr", action="store_true",
-                   help="غیرفعال کردن پاس دوم OCR (سریع‌تر، دقت کمتر)")
-    p.add_argument("--temperature", type=float, default=0.85,
-                   help="دمای مدل Gemini برای ترجمه؛ بالاتر = محاوره‌ای‌تر (پیش‌فرض ۰.۸۵)")
+    p.add_argument("--workers", type=int, default=1)
+    p.add_argument("--mask-padding", type=int, default=3)
+    p.add_argument("--pad-ratio", type=float, default=0.06)
+    p.add_argument("--inpaint-radius", type=int, default=3)
+    p.add_argument("--mag-ratio", type=float, default=1.35)
+    p.add_argument("--no-two-pass-ocr", action="store_true")
+    p.add_argument("--temperature", type=float, default=0.85)
     return p
 
 
 def main():
     args = build_arg_parser().parse_args()
 
+    provider = (args.provider or "gemini").lower().strip()
+    if provider not in PROVIDER_PRESETS:
+        print(f"خطا: provider ناشناخته «{provider}»", file=sys.stderr)
+        sys.exit(1)
+
     keys: List[str] = []
     if args.api_key:
         for item in args.api_key:
             keys.extend(k.strip() for k in item.replace(";", ",").split(",") if k.strip())
-    env_key = os.environ.get("GEMINI_API_KEY", "")
-    if env_key:
-        keys.extend(k.strip() for k in env_key.replace(";", ",").split(",") if k.strip())
+
+    env_name = PROVIDER_PRESETS[provider].get("env_key", "")
+    if env_name:
+        env_val = os.environ.get(env_name, "")
+        if env_val:
+            keys.extend(k.strip() for k in env_val.replace(";", ",").split(",") if k.strip())
+
+    for fallback_env in ("GEMINI_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "API_KEY"):
+        if fallback_env != env_name:
+            v = os.environ.get(fallback_env, "")
+            if v:
+                keys.extend(k.strip() for k in v.replace(";", ",").split(",") if k.strip())
+
     seen = set()
     unique_keys = []
     for k in keys:
@@ -2359,8 +2573,11 @@ def main():
             seen.add(k)
             unique_keys.append(k)
 
-    if not unique_keys:
-        print("خطا: حداقل یک کلید Gemini API لازم است (--api-key یا GEMINI_API_KEY).", file=sys.stderr)
+    if not unique_keys and provider != "ollama":
+        print(
+            f"خطا: حداقل یک کلید API لازم است (--api-key یا env: {env_name}).",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     output_path = MangaTranslator._auto_output_path(args.input, args.output)
@@ -2368,9 +2585,11 @@ def main():
         print(f"[*] نام خروجی خودکار: {output_path}")
 
     translator = MangaTranslator(
-        gemini_api_key=unique_keys,
+        api_key=unique_keys or ["ollama"],
+        provider=provider,
         ocr_langs=args.ocr_lang,
         model_name=args.model,
+        api_base=args.api_base,
         font_path=args.font,
         reading_order=args.reading_order,
         gpu=args.gpu,
