@@ -15,11 +15,10 @@
 1. **ورودی** را می‌گیرد: پوشه تصویر، یک تصویر، ZIP، PDF یا URL مستقیم/صفحهٔ فصل
 2. **OCR** با PaddleOCR متن هر حباب را استخراج می‌کند (انگلیسی / کره‌ای / ژاپنی)
 3. متن‌های تبلیغاتی، واترمارک و SFX را جدا می‌کند تا ترجمه نشوند
-4. فحش‌های سانسور‌شده (`fu*ck`، `sh*t` و …) را کامل می‌کند
-5. با مدل انتخابی به فارسی محاوره‌ای و خیابونی ترجمه می‌کند
-6. متن اصلی را با **LaMa** (اگر GPU باشد) یا **OpenCV inpaint** پاک می‌کند
-7. متن فارسی را با فونت انتخابی داخل حباب می‌نویسد
-8. خروجی را به صورت **PDF / ZIP / پوشه تصویر / HTML** ذخیره می‌کند
+4. با مدل انتخابی به فارسی محاوره‌ای و خیابونی ترجمه می‌کند
+5. متن اصلی را با **LaMa** (اگر GPU باشد) یا **OpenCV inpaint** پاک می‌کند
+6. متن فارسی را با فونت انتخابی داخل حباب می‌نویسد
+7. خروجی را به صورت **PDF / ZIP / پوشه تصویر / HTML** ذخیره می‌کند
 
 ---
 
@@ -110,6 +109,7 @@
 - چند کلید API را با کاما یا چند بار `--api-key` بده؛ روی سهمیه/خطا خودکار جابه‌جا می‌شود.
 - متغیرهای محیطی هم پشتیبانی می‌شوند (`GEMINI_API_KEY`، `OPENAI_API_KEY`، `DEEPSEEK_API_KEY` و …).
 
+
 ### OCR
 - صفحهٔ اسکنلیشن انگلیسی → `--ocr-lang en`
 - اسکن خام کره‌ای → `--ocr-lang ko en`
@@ -119,7 +119,6 @@
 ### پاک‌سازی
 - اگر GPU و LaMa در دسترس باشد → inpaint با کیفیت بالاتر
 - در غیر این صورت → OpenCV inpaint (دو پاس)
-
 
 ---
 
@@ -154,6 +153,16 @@ git clone https://github.com/amirwolf5122/Manga-AutoTranslate.git
 cd Manga-AutoTranslate
 python -m venv .venv
 source .venv/bin/activate   # ویندوز: .venv\Scripts\activate
+
+# وابستگی‌های مشترک
+pip install -r requirements.txt
+
+# برای Gemini
+pip install google-genai
+
+# برای OpenAI / DeepSeek / Groq / xAI / ...
+pip install openai
+
 bash run.sh                 # ویندوز: run.bat
 ```
 
@@ -176,6 +185,7 @@ Manga-AutoTranslate/
 ├── manga_translator.py   # اسکریپت اصلی
 ├── run.sh                # رانر تعاملی لینوکس/مک
 ├── run.bat               # رانر تعاملی ویندوز
+├── requirements.txt
 ├── README.md
 └── fonts/                # فونت فارسی (دانلود جداگانه)
 ```
