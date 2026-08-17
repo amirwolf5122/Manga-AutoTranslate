@@ -42,7 +42,7 @@ if !NEED_INSTALL! equ 1 (
     pip install --no-cache-dir --no-deps --constraint constraints.txt paddleocr==2.7.0.3
     pip install --no-cache-dir --constraint constraints.txt pymupdf
     pip install --no-cache-dir --constraint constraints.txt --ignore-installed attrdict cython fire lxml openpyxl pdf2docx premailer python-docx visualdl
-    pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4 google-genai decorator imgaug opt-einsum astor pyyaml simple-lama-inpainting
+    pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4 decorator imgaug opt-einsum astor pyyaml simple-lama-inpainting
     
     echo نصب وابستگی‌ها تمام شد.
 ) else (
@@ -55,32 +55,94 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
-echo ۳) کلید Gemini API
-echo کلید رایگان‌تون رو از https://aistudio.google.com/api-keys بگیرید.
-echo کلیدها رو یکی‌یکی وارد کنید (خالی بذارید تا تموم بشه):
+
+echo ۱) ارائه‌دهنده AI را انتخاب کنید:
+echo  1) gemini      (Google Gemini - رایگان با سهمیه)
+echo  2) openai      (ChatGPT / GPT)
+echo  3) deepseek    (DeepSeek)
+echo  4) groq        (Groq - سریع و رایگان)
+echo  5) xai         (xAI / Grok)
+echo  6) openrouter  (OpenRouter)
+echo  7) ollama      (لوکال - بدون کلید)
+echo  8) together    (Together AI)
+set /p "prov_choice=انتخاب [پیش‌فرض 1]: "
+if "!prov_choice!"=="" set prov_choice=1
+
+if "!prov_choice!"=="1" set PROVIDER=gemini
+if "!prov_choice!"=="2" set PROVIDER=openai
+if "!prov_choice!"=="3" set PROVIDER=deepseek
+if "!prov_choice!"=="4" set PROVIDER=groq
+if "!prov_choice!"=="5" set PROVIDER=xai
+if "!prov_choice!"=="6" set PROVIDER=openrouter
+if "!prov_choice!"=="7" set PROVIDER=ollama
+if "!prov_choice!"=="8" set PROVIDER=together
+if not defined PROVIDER set PROVIDER=gemini
+echo ارائه‌دهنده: !PROVIDER!
 echo.
 
-set "API_KEYS="
-set i=1
-
-:key_loop
-set /p "k=کلید !i! (Enter = پایان): "
-if "!k!"=="" goto key_done
-if defined API_KEYS (
-    set "API_KEYS=!API_KEYS!,!k!"
+REM نصب پکیج مربوط به provider
+if "!PROVIDER!"=="gemini" (
+    python -c "import google.genai" 2>nul
+    if errorlevel 1 (
+        echo نصب google-genai...
+        pip install --no-cache-dir google-genai
+    )
 ) else (
-    set "API_KEYS=!k!"
+    python -c "import openai" 2>nul
+    if errorlevel 1 (
+        echo نصب openai...
+        pip install --no-cache-dir openai
+    )
 )
-set /a i+=1
-goto key_loop
 
-:key_done
-if not defined API_KEYS (
-    echo خطا: حداقل یک کلید لازم است.
-    pause
-    exit /b 1
+set "API_KEYS="
+set "MODEL_NAME="
+if not "!PROVIDER!"=="ollama" (
+    echo ۲) کلید API برای !PROVIDER!
+    if "!PROVIDER!"=="gemini" echo کلید رایگان: https://aistudio.google.com/api-keys
+    if "!PROVIDER!"=="openai" echo کلید: https://platform.openai.com/api-keys
+    if "!PROVIDER!"=="deepseek" echo کلید: https://platform.deepseek.com/api_keys
+    if "!PROVIDER!"=="groq" echo کلید: https://console.groq.com/keys
+    if "!PROVIDER!"=="xai" echo کلید: https://console.x.ai/
+    if "!PROVIDER!"=="openrouter" echo کلید: https://openrouter.ai/keys
+    if "!PROVIDER!"=="together" echo کلید: https://api.together.xyz/settings/api-keys
+    echo کلیدها رو یکی‌یکی وارد کنید (خالی بذارید تا تموم بشه):
+    echo.
+
+    set i=1
+    :key_loop
+    set /p "k=کلید !i! (Enter = پایان): "
+    if "!k!"=="" goto key_done
+    if defined API_KEYS (
+        set "API_KEYS=!API_KEYS!,!k!"
+    ) else (
+        set "API_KEYS=!k!"
+    )
+    set /a i+=1
+    goto key_loop
+
+    :key_done
+    if not defined API_KEYS (
+        echo خطا: حداقل یک کلید لازم است.
+        pause
+        exit /b 1
+    )
+    echo کلید ثبت شد.
+) else (
+    echo ۲) Ollama نیاز به کلید ندارد (لوکال).
 )
-echo !i! کلید ثبت شد.
+echo.
+
+echo ۳) مدل (Enter = پیش‌فرض provider):
+if "!PROVIDER!"=="gemini" echo   مثال: gemini-flash-latest / gemini-2.5-flash
+if "!PROVIDER!"=="openai" echo   مثال: gpt-4o-mini / gpt-4o
+if "!PROVIDER!"=="deepseek" echo   مثال: deepseek-chat / deepseek-reasoner
+if "!PROVIDER!"=="groq" echo   مثال: llama-3.3-70b-versatile
+if "!PROVIDER!"=="xai" echo   مثال: grok-2-latest
+if "!PROVIDER!"=="openrouter" echo   مثال: google/gemini-2.0-flash-001
+if "!PROVIDER!"=="ollama" echo   مثال: llama3.2 / qwen2.5
+if "!PROVIDER!"=="together" echo   مثال: meta-llama/Llama-3.3-70B-Instruct-Turbo
+set /p "MODEL_NAME=مدل: "
 echo.
 
 echo زبان اصلی متن منبع رو انتخاب کنید:
@@ -159,17 +221,15 @@ echo فونت: !FONT_PATH!
 echo.
 
 echo ========================================
-echo شروع ترجمه...
+echo شروع ترجمه با !PROVIDER! ...
 echo ========================================
 echo.
 
-python manga_translator.py ^
-  -i "!INPUT_PATH!" ^
-  -o "!OUTPUT!" ^
-  --font "!FONT_PATH!" ^
-  --ocr-lang !OCR_LANG! ^
-  --reading-order "!READING_ORDER!" ^
-  --api-key "!API_KEYS!"
+set "CMD=python manga_translator.py -i "!INPUT_PATH!" -o "!OUTPUT!" --font "!FONT_PATH!" --ocr-lang !OCR_LANG! --reading-order "!READING_ORDER!" --provider "!PROVIDER!""
+if defined API_KEYS set "CMD=!CMD! --api-key "!API_KEYS!""
+if defined MODEL_NAME set "CMD=!CMD! --model "!MODEL_NAME!""
+
+!CMD!
 
 echo.
 echo ========================================
