@@ -107,7 +107,7 @@
   gemini-2.5-flash → gemini-flash-latest → gemini-2.5-flash-lite → …
   ```
 - چند کلید API را با کاما یا چند بار `--api-key` بده؛ روی سهمیه/خطا خودکار جابه‌جا می‌شود.
-- متغیرهای محیطی هم پشتیبانی می‌شوند (`GEMINI_API_KEY`، `OPENAI_API_KEY`، `DEEPSEEK_API_KEY` و …).
+- متغیرهای محیطی هم پشتیبانی می‌شوند (`GEMINI`، `OPENAI`، `DEEPSEEK` و …).
 
 
 ### OCR
