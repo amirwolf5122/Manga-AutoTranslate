@@ -176,7 +176,6 @@ Manga-AutoTranslate/
 ├── manga_translator.py   # اسکریپت اصلی
 ├── run.sh                # رانر تعاملی لینوکس/مک
 ├── run.bat               # رانر تعاملی ویندوز
-├── requirements.txt
 ├── README.md
 └── fonts/                # فونت فارسی (دانلود جداگانه)
 ```
