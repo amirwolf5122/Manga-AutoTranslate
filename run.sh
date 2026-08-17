@@ -47,9 +47,6 @@ fi
 if ! python3 -c "import pymupdf" 2>/dev/null; then
     NEED_INSTALL=1
 fi
-if ! python3 -c "import google.genai" 2>/dev/null; then
-    NEED_INSTALL=1
-fi
 
 if [ $NEED_INSTALL -eq 1 ]; then
     echo "برخی پکیج‌ها نصب نیستند یا نسخه اشتباه دارند. در حال نصب دقیق..."
@@ -62,7 +59,7 @@ if [ $NEED_INSTALL -eq 1 ]; then
     pip install --no-cache-dir --no-deps --constraint constraints.txt paddleocr==2.7.0.3
     pip install --no-cache-dir --constraint constraints.txt pymupdf
     pip install --no-cache-dir --constraint constraints.txt --ignore-installed attrdict cython fire lxml openpyxl pdf2docx premailer python-docx visualdl
-    pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4 google-genai decorator imgaug opt-einsum astor pyyaml simple-lama-inpainting
+    pip install --no-cache-dir --constraint constraints.txt Pillow pyclipper lmdb scikit-image shapely python-bidi arabic-reshaper rapidfuzz imageio matplotlib tqdm requests beautifulsoup4 decorator imgaug opt-einsum astor pyyaml simple-lama-inpainting
     
     echo "نصب وابستگی‌ها تمام شد."
 else
@@ -75,30 +72,108 @@ if ! command -v python3 &> /dev/null; then
     exit 1
 fi
 
-echo "۳) کلید Gemini API"
-echo "کلید رایگان‌تون رو از https://aistudio.google.com/api-keys بگیرید."
-echo "کلیدها رو یکی‌یکی وارد کنید (خالی بذارید تا تموم بشه):"
-echo ""
-keys=()
-i=1
-while true; do
-    read -s -p "کلید $i (Enter = پایان): " k
-    echo ""
-    if [ -z "$k" ]; then
-        break
-    fi
-    keys+=("$k")
-    ((i++))
-done
-if [ ${#keys[@]} -eq 0 ]; then
-    echo "خطا: حداقل یک کلید لازم است."
-    exit 1
-fi
-API_KEYS=$(IFS=,; echo "${keys[*]}")
-echo "${#keys[@]} کلید ثبت شد."
+echo "۱) ارائه‌دهنده AI را انتخاب کنید:"
+echo "  1) gemini      (Google Gemini - رایگان با سهمیه)"
+echo "  2) openai      (ChatGPT / GPT)"
+echo "  3) deepseek    (DeepSeek)"
+echo "  4) groq        (Groq - سریع و رایگان)"
+echo "  5) xai         (xAI / Grok)"
+echo "  6) openrouter  (OpenRouter - دسترسی به چند مدل)"
+echo "  7) ollama      (لوکال - بدون کلید)"
+echo "  8) together    (Together AI)"
+read -p "انتخاب [پیش‌فرض 1]: " prov_choice
+prov_choice=${prov_choice:-1}
+case $prov_choice in
+    1) PROVIDER="gemini" ;;
+    2) PROVIDER="openai" ;;
+    3) PROVIDER="deepseek" ;;
+    4) PROVIDER="groq" ;;
+    5) PROVIDER="xai" ;;
+    6) PROVIDER="openrouter" ;;
+    7) PROVIDER="ollama" ;;
+    8) PROVIDER="together" ;;
+    *) PROVIDER="gemini" ;;
+esac
+echo "ارائه‌دهنده: $PROVIDER"
 echo ""
 
-echo "زبان اصلی متن منبع رو انتخاب کنید:"
+# نصب پکیج مربوط به provider
+case $PROVIDER in
+    gemini)
+        if ! python3 -c "import google.genai" 2>/dev/null; then
+            echo "نصب google-genai..."
+            pip install --no-cache-dir google-genai
+        fi
+        ;;
+    ollama)
+        if ! python3 -c "import openai" 2>/dev/null; then
+            echo "نصب openai (برای Ollama)..."
+            pip install --no-cache-dir openai
+        fi
+        ;;
+    *)
+        if ! python3 -c "import openai" 2>/dev/null; then
+            echo "نصب openai..."
+            pip install --no-cache-dir openai
+        fi
+        ;;
+esac
+
+API_KEYS=""
+MODEL_ARG=""
+if [ "$PROVIDER" != "ollama" ]; then
+    echo "۲) کلید API برای $PROVIDER"
+    case $PROVIDER in
+        gemini)     echo "کلید رایگان: https://aistudio.google.com/api-keys" ;;
+        openai)     echo "کلید: https://platform.openai.com/api-keys" ;;
+        deepseek)   echo "کلید: https://platform.deepseek.com/api_keys" ;;
+        groq)       echo "کلید: https://console.groq.com/keys" ;;
+        xai)        echo "کلید: https://console.x.ai/" ;;
+        openrouter) echo "کلید: https://openrouter.ai/keys" ;;
+        together)   echo "کلید: https://api.together.xyz/settings/api-keys" ;;
+    esac
+    echo "کلیدها رو یکی‌یکی وارد کنید (خالی بذارید تا تموم بشه):"
+    echo ""
+    keys=()
+    i=1
+    while true; do
+        read -s -p "کلید $i (Enter = پایان): " k
+        echo ""
+        if [ -z "$k" ]; then
+            break
+        fi
+        keys+=("$k")
+        ((i++))
+    done
+    if [ ${#keys[@]} -eq 0 ]; then
+        echo "خطا: حداقل یک کلید لازم است."
+        exit 1
+    fi
+    API_KEYS=$(IFS=,; echo "${keys[*]}")
+    echo "${#keys[@]} کلید ثبت شد."
+else
+    echo "۲) Ollama نیاز به کلید ندارد (لوکال)."
+fi
+echo ""
+
+echo "۳) مدل (Enter = پیش‌فرض provider):"
+case $PROVIDER in
+    gemini)     echo "  مثال: gemini-flash-latest | gemini-2.5-flash | gemini-2.5-flash-lite" ;;
+    openai)     echo "  مثال: gpt-4o-mini | gpt-4o | gpt-4.1-mini" ;;
+    deepseek)   echo "  مثال: deepseek-chat | deepseek-reasoner" ;;
+    groq)       echo "  مثال: llama-3.3-70b-versatile | llama-3.1-8b-instant" ;;
+    xai)        echo "  مثال: grok-2-latest | grok-3" ;;
+    openrouter) echo "  مثال: google/gemini-2.0-flash-001 | anthropic/claude-3.5-sonnet" ;;
+    ollama)     echo "  مثال: llama3.2 | qwen2.5 | mistral" ;;
+    together)   echo "  مثال: meta-llama/Llama-3.3-70B-Instruct-Turbo" ;;
+esac
+read -p "مدل: " MODEL_NAME
+if [ -n "$MODEL_NAME" ]; then
+    MODEL_ARG="--model $MODEL_NAME"
+fi
+echo ""
+
+echo "۴) زبان اصلی متن منبع رو انتخاب کنید:"
 echo " 1) en (انگلیسی - اکثر اسکنلیشن‌ها)"
 echo " 2) ja en (ژاپنی خام)"
 echo " 3) ko en (کره‌ای خام)"
@@ -169,16 +244,28 @@ echo "فونت: $FONT_PATH"
 echo ""
 
 echo "========================================"
-echo "شروع ترجمه..."
+echo "شروع ترجمه با $PROVIDER ..."
 echo "========================================"
 echo ""
-python3 manga_translator.py \
-  -i "$INPUT_PATH" \
-  -o "$OUTPUT" \
-  --font "$FONT_PATH" \
-  --ocr-lang $OCR_LANG \
-  --reading-order "$READING_ORDER" \
-  --api-key "$API_KEYS"
+
+CMD=(python3 manga_translator.py
+  -i "$INPUT_PATH"
+  -o "$OUTPUT"
+  --font "$FONT_PATH"
+  --ocr-lang $OCR_LANG
+  --reading-order "$READING_ORDER"
+  --provider "$PROVIDER"
+)
+
+if [ -n "$API_KEYS" ]; then
+    CMD+=(--api-key "$API_KEYS")
+fi
+if [ -n "$MODEL_NAME" ]; then
+    CMD+=(--model "$MODEL_NAME")
+fi
+
+"${CMD[@]}"
+
 echo ""
 echo "========================================"
 echo "تمام شد! خروجی: $OUTPUT"
