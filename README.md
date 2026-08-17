@@ -107,7 +107,7 @@
   gemini-2.5-flash → gemini-flash-latest → gemini-2.5-flash-lite → …
   ```
 - چند کلید API را با کاما یا چند بار `--api-key` بده؛ روی سهمیه/خطا خودکار جابه‌جا می‌شود.
-- متغیرهای محیطی هم پشتیبانی می‌شوند (`GEMINI`، `OPENAI`، `DEEPSEEK` و …).
+- متغیرهای محیطی هم پشتیبانی می‌شوند (`GEMINI_API_KEY`، `OPENAI_API_KEY`، `DEEPSEEK_API_KEY` و …).
 
 
 ### OCR
@@ -134,7 +134,7 @@
 ### ۲) GitHub Actions
 
 1. ریپو را [Fork](https://github.com/amirwolf5122/Manga-AutoTranslate/fork) کن  
-2. در Settings → Secrets کلید موردنظر را بگذار (`GEMINI_API_KEY` یا `OPENAI_API_KEY` و …)  
+2. در Settings → Secrets کلید موردنظر را بگذار (`GEMINI` یا `OPENAI` و …)  
 3. از تب Actions ورک‌فلو را Run کن  
 4. خروجی را از Artifacts دانلود کن  
 
