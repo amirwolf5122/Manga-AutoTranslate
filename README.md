@@ -38,7 +38,6 @@
 | **چند ارائه‌دهنده AI** | Gemini، OpenAI/ChatGPT، DeepSeek، Groq، xAI/Grok، Together، OpenRouter، Ollama |
 | **Fallback مدل (Gemini)** | اگر مدل در دسترس نبود، فوری مدل بعدی را امتحان می‌کند |
 | **چند کلید API** | جابه‌جایی خودکار روی سهمیه / خطا |
-| **Uncensor** | تبدیل خودکار `fu*ck` → `fuck`، `sh*t` → `shit` و … قبل از ترجمه |
 | **پاک‌سازی متن** | LaMa (GPU) یا OpenCV inpaint (CPU) |
 | **رندر فارسی** | reshaper + bidi + یک فونت TTF فارسی |
 | **ورودی** | پوشه، تصویر، ZIP، PDF، URL تصویر یا صفحهٔ فصل |
