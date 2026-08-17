@@ -34,6 +34,7 @@ except ImportError:
           "دستور: pip install arabic-reshaper python-bidi", file=sys.stderr)
     raise
 
+
 _HAS_GEMINI = False
 try:
     from google import genai
@@ -65,6 +66,7 @@ try:
     _HAS_LAMA = True
 except ImportError:
     pass
+
 
 PROVIDER_PRESETS = {
     "gemini": {
@@ -369,7 +371,9 @@ class MangaTranslator:
         mag_ratio: float = 1.35,
         translation_temperature: float = 0.85,
         two_pass_ocr: bool = True,
-        max_output_width: Optional[int] = None
+        max_output_width: Optional[int] = None,
+        stitch_max_height: int = 16000,
+        stitch_keep_first: bool = True,
     ):
         provider = (provider or "gemini").lower().strip()
         if provider not in PROVIDER_PRESETS:
@@ -418,6 +422,8 @@ class MangaTranslator:
         self.translation_temperature = translation_temperature
         self.two_pass_ocr = two_pass_ocr
         self.max_output_width = max_output_width
+        self.stitch_max_height = int(stitch_max_height) if stitch_max_height else 0
+        self.stitch_keep_first = bool(stitch_keep_first)
 
         self._name_glossary: Dict[str, str] = {}
         self._lama = None
@@ -2543,6 +2549,91 @@ html, body { background: #0a0a0b; }
                 out.append(s)
         return out
 
+    def _stitch_pages_for_efficiency(
+        self,
+        image_files: List[str],
+        work_dir: str,
+    ) -> List[str]:
+        if self.stitch_max_height <= 0 or len(image_files) <= 1:
+            return image_files
+
+        os.makedirs(work_dir, exist_ok=True)
+        result: List[str] = []
+        start_idx = 0
+
+        if self.stitch_keep_first and len(image_files) >= 1:
+            
+            first_out = os.path.join(work_dir, "strip_000_cover" + os.path.splitext(image_files[0])[1])
+            if not os.path.isfile(first_out):
+                shutil.copy2(image_files[0], first_out)
+            result.append(first_out)
+            start_idx = 1
+            if start_idx >= len(image_files):
+                return result
+
+        
+        widths = []
+        for f in image_files[start_idx:]:
+            im = cv2.imread(f)
+            if im is not None:
+                widths.append(im.shape[1])
+        if not widths:
+            return image_files
+        widths.sort()
+        target_w = widths[len(widths) // 2]
+
+        strip_imgs: List[np.ndarray] = []
+        strip_h = 0
+        strip_i = 0
+
+        def flush_strip():
+            nonlocal strip_imgs, strip_h, strip_i
+            if not strip_imgs:
+                return
+            merged = np.vstack(strip_imgs)
+            out_path = os.path.join(work_dir, f"strip_{strip_i + 1:03d}.jpg")
+            self._write_image(merged, out_path)
+            result.append(out_path)
+            print(f"    [+] نوار {strip_i + 1}: ارتفاع {merged.shape[0]}px "
+                  f"از {len(strip_imgs)} صفحه")
+            strip_i += 1
+            strip_imgs = []
+            strip_h = 0
+
+        for f in image_files[start_idx:]:
+            img = cv2.imread(f)
+            if img is None:
+                print(f"    [!] خواندن نشد، رد شد: {os.path.basename(f)}")
+                continue
+            h, w = img.shape[:2]
+            if w != target_w:
+                new_h = max(1, int(round(h * (target_w / float(w)))))
+                img = cv2.resize(img, (target_w, new_h), interpolation=cv2.INTER_AREA)
+                h = new_h
+
+            
+            if h > self.stitch_max_height:
+                flush_strip()
+                out_path = os.path.join(work_dir, f"strip_{strip_i + 1:03d}.jpg")
+                self._write_image(img, out_path)
+                result.append(out_path)
+                print(f"    [+] نوار {strip_i + 1}: صفحهٔ بلند تکی ({h}px)")
+                strip_i += 1
+                continue
+
+            if strip_h + h > self.stitch_max_height and strip_imgs:
+                flush_strip()
+
+            strip_imgs.append(img)
+            strip_h += h
+
+        flush_strip()
+
+        print(f"[*] چسباندن صفحات: {len(image_files)} صفحه → {len(result)} نوار "
+              f"(سقف ارتفاع={self.stitch_max_height}px"
+              f"{'، صفحهٔ اول جدا' if self.stitch_keep_first else ''})")
+        return result if result else image_files
+
     def run(self, input_path: str, output_path: str, resume: bool = True,
             clean_old: bool = True) -> None:
         if clean_old:
@@ -2588,6 +2679,11 @@ html, body { background: #0a0a0b; }
         if not image_files:
             print("[!] هیچ تصویری برای پردازش پیدا نشد.", file=sys.stderr)
             return
+
+        
+        if self.stitch_max_height > 0 and len(image_files) > 2:
+            stitch_dir = os.path.join(cache_dir, "stitched")
+            image_files = self._stitch_pages_for_efficiency(image_files, stitch_dir)
 
         processed_files = []
         skipped = 0
@@ -2683,7 +2779,13 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--keep-old", action="store_true")
     p.add_argument("--request-delay", type=float, default=0.0)
     p.add_argument("--max-retries", type=int, default=4)
-    p.add_argument("--max-chunk-height", type=int, default=3600)
+    p.add_argument("--max-chunk-height", type=int, default=3600,
+                   help="حداکثر ارتفاع هر تکه OCR داخل یک تصویر (پیکسل)")
+    p.add_argument("--stitch-max-height", type=int, default=16000,
+                   help="صفحات کوتاه را به نوارهایی تا این ارتفاع بچسبان "
+                        "(۰ = خاموش). برای فصل‌های ۱۰۰+ صفحهٔ کوتاه مصرف API را کم می‌کند.")
+    p.add_argument("--no-stitch-keep-first", action="store_true",
+                   help="صفحهٔ اول را هم داخل نوارها بگذار (پیش‌فرض: صفحهٔ اول جدا می‌ماند)")
     p.add_argument("--img-format", choices=["webp", "png", "jpg"], default="jpg")
     p.add_argument("--quality", type=int, default=80)
     p.add_argument("--max-width", type=int, default=900)
@@ -2764,6 +2866,8 @@ def main():
         two_pass_ocr=not args.no_two_pass_ocr,
         translation_temperature=args.temperature,
         max_output_width=(args.max_width or None),
+        stitch_max_height=args.stitch_max_height,
+        stitch_keep_first=not args.no_stitch_keep_first,
     )
     translator.run(
         args.input,
