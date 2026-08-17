@@ -78,7 +78,7 @@ PROVIDER_PRESETS = {
         "default_model": "gpt-4o-mini",
         "env_key": "OPENAI_API_KEY",
     },
-    "chatgpt": {
+    "chatgpt": {  
         "type": "openai",
         "base_url": "https://api.openai.com/v1",
         "default_model": "gpt-4o-mini",
@@ -102,7 +102,7 @@ PROVIDER_PRESETS = {
         "default_model": "grok-2-latest",
         "env_key": "XAI_API_KEY",
     },
-    "grok": {
+    "grok": {  
         "type": "openai",
         "base_url": "https://api.x.ai/v1",
         "default_model": "grok-2-latest",
@@ -124,7 +124,7 @@ PROVIDER_PRESETS = {
         "type": "openai",
         "base_url": "http://localhost:11434/v1",
         "default_model": "llama3.2",
-        "env_key": "OLLAMA_API_KEY",
+        "env_key": "OLLAMA_API_KEY",  
     },
 }
 
@@ -234,6 +234,7 @@ PURE_HANGUL_SFX_RE = re.compile(r"^[\uac00-\ud7a3\s!?.…~\-]+$")
 
 
 def uncensor_swears(text: str) -> str:
+    
     if not text:
         return text
 
@@ -378,7 +379,7 @@ class MangaTranslator:
             )
         self.provider = provider
         self.provider_cfg = PROVIDER_PRESETS[provider]
-        self.provider_type = self.provider_cfg["type"]
+        self.provider_type = self.provider_cfg["type"]  
 
         if isinstance(api_key, str):
             keys = [k.strip() for k in api_key.replace(";", ",").split(",") if k.strip()]
@@ -388,11 +389,12 @@ class MangaTranslator:
         if not keys and self.provider != "ollama":
             raise ValueError(f"حداقل یک کلید API برای {provider} لازم است.")
         if not keys:
-            keys = ["ollama"]
+            keys = ["ollama"]  
         self._api_keys: List[str] = keys
         self._key_index: int = 0
         self._ocr_lock = threading.Lock()
 
+        
         self.model_name = (model_name or self.provider_cfg.get("default_model") or "gemini-flash-latest").strip()
         self._model_cascade: List[str] = []
         self._model_index: int = 0
@@ -524,6 +526,7 @@ class MangaTranslator:
         print(f"[*] مدل PaddleOCR با زبان '{main_lang}' و دستگاه '{device}' بارگذاری شد "
               f"(MKLDNN خاموش، workers={self.max_workers}).")
 
+        
         if self.provider_type == "gemini":
             if not _HAS_GEMINI:
                 raise ImportError(
@@ -542,6 +545,7 @@ class MangaTranslator:
             else:
                 print(f"[*] ارائه‌دهنده: Gemini | مدل: {self.model_name}{cascade_info}")
         else:
+            
             if not _HAS_OPENAI:
                 raise ImportError(
                     "برای استفاده از OpenAI / DeepSeek / Groq / ... باید openai نصب باشد:\n"
@@ -818,6 +822,7 @@ class MangaTranslator:
         return True
 
     def _apply_api_key(self, key: str) -> None:
+        
         if self.provider_type == "gemini":
             self.client = genai.Client(api_key=key)
         else:
@@ -1059,22 +1064,49 @@ class MangaTranslator:
             b = (x2 - margin, y2 - margin, x2 + w2 + margin, y2 + h2 + margin)
             return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
 
-        def likely_same_bubble(r1, r2):
+        def pair_metrics(r1, r2):
             x1, y1, w1, h1 = r1
             x2, y2, w2, h2 = r2
-            cy1, cy2 = y1 + h1 / 2, y2 + h2 / 2
-            vgap = abs(cy1 - cy2) - (h1 + h2) / 2
-            if vgap > max(self.group_margin * 2, 8):
-                xi1 = max(x1, x2)
-                xi2 = min(x1 + w1, x2 + w2)
-                h_overlap = max(0, xi2 - xi1)
-                if h_overlap < 0.4 * min(w1, w2):
-                    return False
-            return True
+            cy1, cy2 = y1 + h1 / 2.0, y2 + h2 / 2.0
+            cx1, cx2 = x1 + w1 / 2.0, x2 + w2 / 2.0
+            vgap = abs(cy1 - cy2) - (h1 + h2) / 2.0
+            hgap = abs(cx1 - cx2) - (w1 + w2) / 2.0
+            avg_h = max(1.0, (h1 + h2) / 2.0)
+            xi1, xi2 = max(x1, x2), min(x1 + w1, x2 + w2)
+            h_overlap_ratio = max(0.0, xi2 - xi1) / max(1.0, min(w1, w2))
+            return vgap, hgap, avg_h, h_overlap_ratio, abs(cx1 - cx2), max(h1, h2), min(h1, h2)
 
+        def likely_same_bubble(r1, r2):
+            
+            vgap, hgap, avg_h, h_overlap_ratio, cx_dist, h_max, h_min = pair_metrics(r1, r2)
+            if h_max > h_min * 2.4:
+                return False
+            
+            abs_max_vgap = max(55.0, avg_h * 1.6)
+            if -avg_h * 0.35 <= vgap <= abs_max_vgap:
+                if h_overlap_ratio >= 0.22 or cx_dist <= max((r1[2] + r2[2]) * 0.35, 48):
+                    return True
+            if hgap <= max(self.group_margin * 3, avg_h * 0.75, 20) and abs(
+                (r1[1] + r1[3] / 2) - (r2[1] + r2[3] / 2)
+            ) <= avg_h * 0.6:
+                return True
+            return False
+
+        merge_margin = max(self.group_margin, 14)
         for i in range(n):
             for j in range(i + 1, n):
-                if expanded_overlap(rects[i], rects[j], self.group_margin) and likely_same_bubble(rects[i], rects[j]):
+                if expanded_overlap(rects[i], rects[j], merge_margin) and likely_same_bubble(rects[i], rects[j]):
+                    union(i, j)
+
+        
+        order = sorted(range(n), key=lambda i: (rects[i][1] + rects[i][3] / 2.0, rects[i][0]))
+        for a in range(len(order) - 1):
+            i, j = order[a], order[a + 1]
+            vgap, hgap, avg_h, h_overlap_ratio, cx_dist, h_max, h_min = pair_metrics(rects[i], rects[j])
+            if h_max > h_min * 2.4:
+                continue
+            if -avg_h * 0.35 <= vgap <= max(50.0, avg_h * 1.5):
+                if h_overlap_ratio >= 0.18 or cx_dist <= max((rects[i][2] + rects[j][2]) * 0.4, 56):
                     union(i, j)
 
         groups = {}
@@ -1273,26 +1305,139 @@ class MangaTranslator:
 
     def _get_system_instruction(self) -> str:
         return (
-            "دیالوگ مانهوا رو فارسیِ کوچه‌بازار بنویس؛ مثل حرف زدن واقعی، نه کتاب.\n"
-            "شکسته (رو، شون، ه، می‌کنه). کوتاه و واضح.\n"
-            "فحش طبیعی و کامل: What the fuck are you doing?! → چه گوهی داری می‌خوری?! | "
-            "fuck you → گاییدمت | shit → گه | bastard → حرومزاده.\n"
-            "اگر متن اصلی فحش سانسور شده داشت (مثل fu*ck یا sh*t) حتماً کاملش کن و بعد ترجمه کن.\n"
-            "ممنوع: می‌باشد، است، را، خواهید، ایشان، این‌گونه، متأسفانه.\n"
-            "اسم خاص نویسه‌گردانی. OCR خراب → معنی حدس بزن.\n"
-            "خروجی فقط یک آرایه JSON باشد. هر آیتم: {\"id\": عدد, \"translation\": \"متن فارسی\", "
-            "\"names\": [{\"source\": \"...\", \"persian\": \"...\"}] }\n"
-            "هیچ متن اضافه یا توضیح ننویس."
+            "تو «بازآفرین دیالوگ» مانهوا هستی.\n"
+            "تو مترجم تحت‌اللفظی نیستی. کار تو ترجمه‌ی کلمات نیست؛ "
+            "کار تو بازسازی همان لحظه، همان آدم، همان احساس و همان منظور به زبان فارسی است.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "روش فکر کردن\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "برای هر دیالوگ، متن انگلیسی را مستقیم به فارسی تبدیل نکن.\n"
+            "اول درک کن که شخصیت دقیقاً چه می‌خواهد بگوید، چرا آن را می‌گوید و چه حسی دارد.\n"
+            "بعد تصور کن این شخصیت اگر یک ایرانی بود و همین موقعیت دقیقاً برایش اتفاق افتاده بود، "
+            "بدون فکر کردن به متن انگلیسی، چه جمله‌ای به زبان می‌آورد.\n"
+            "همان جمله‌ی فارسی را خروجی بده.\n\n"
+            "یعنی مسیر کار این باشد:\n"
+            "متن انگلیسی → درک صحنه → درک شخصیت → درک احساس → پیدا کردن بیان طبیعی فارسی → خروجی\n"
+            "هرگز این مسیر را دنبال نکن:\n"
+            "متن انگلیسی → جابه‌جایی کلمه‌ها → فارسی\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "قانون «صدای واقعی»\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "ترجمه نباید صدای مترجم داشته باشد.\n"
+            "باید صدای همان شخصیت را داشته باشد.\n"
+            "اگر جمله از نظر معنایی درست است ولی یک ایرانی در مکالمه‌ی واقعی این‌طور نمی‌گوید، "
+            "ترجمه غلط محسوب می‌شود و باید عوض شود.\n\n"
+            "هر دیالوگ باید انگار مستقیماً از دهان شخصیت بیرون آمده باشد:\n"
+            "- با ریتم طبیعی گفتار\n"
+            "- با انتخاب کلمات طبیعی\n"
+            "- با واکنش‌های واقعی\n"
+            "- با شدت احساسی متناسب با صحنه\n"
+            "- بدون بوی ترجمه\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "شخصیت مهم‌تر از لغت است\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "یک جمله برای دو شخصیت مختلف لزوماً نباید یک‌جور ترجمه شود.\n"
+            "به سن، شخصیت، رابطه، جایگاه، اعتمادبه‌نفس و حالت روانی گوینده توجه کن.\n"
+            "شخصیت خجالتی، مغرور، لوس، عصبانی، شرور، شوخ، جدی یا ترسیده باید صدای متفاوتی داشته باشد.\n"
+            "اگر شخصیت در حال خفه کردن خنده است، جمله باید این حس را داشته باشد.\n"
+            "اگر از چیزی جا خورده، جمله باید واکنشی باشد.\n"
+            "اگر عصبانی است، جمله نباید بی‌حال و تمیز باشد.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "فارسی را از خود فارسی بساز\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "هرجا انگلیسی یک اصطلاح، کنایه یا بیان خاص دارد، دنبال نسخه‌ی فارسیِ همان رفتار بگرد، "
+            "نه ترجمه‌ی لغوی آن.\n"
+            "ترتیب کلمات انگلیسی هیچ اهمیتی ندارد.\n"
+            "ممکن است یک جمله در فارسی کوتاه‌تر، بلندتر، شکسته‌تر یا کاملاً بازسازی‌شده باشد.\n"
+            "تنها چیزی که باید حفظ شود، معنی، نیت، رابطه و حس است.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "قانون دیالوگ\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "فارسی باید شبیه گفت‌وگو باشد، نه متن ادبی.\n"
+            "اما «محاوره‌ای» به معنی شکسته‌کردن زورکی همه‌چیز نیست.\n"
+            "به شکل طبیعی حرف زدن نگاه کن.\n"
+            "بعضی جمله‌ها کوتاه می‌شوند.\n"
+            "بعضی جاها مکث می‌آید.\n"
+            "بعضی جاها جمله نصفه می‌ماند.\n"
+            "بعضی جاها شخصیت یک کلمه را تأکید می‌کند.\n"
+            "فقط وقتی این رفتار در خود موقعیت وجود دارد، از آن استفاده کن.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "فحش، توهین و شدت\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "اگر شخصیت فحش می‌دهد، شدت واقعی حرفش را نگه دار.\n"
+            "نه ضعیف‌ترش کن، نه بی‌دلیل شدیدترش کن.\n"
+            "فحش باید مثل فحش واقعی فارسی انتخاب شود، نه ترجمه‌ی فرهنگ‌لغتی.\n"
+            "اگر متن انگلیسی تند است، فارسی هم باید تند به نظر برسد.\n"
+            "اگر فقط شوخی یا طعنه است، فحش را بی‌جهت سنگین نکن.\n"
+            "اگر متن اصلی فحش سانسور شده داشت (مثل fu*ck یا sh*t) کاملش کن و بعد بازآفرینی کن.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "OCR خراب\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "OCR را متن مقدس و دقیق فرض نکن.\n"
+            "اگر کلمه‌ای ناقص، چسبیده، اشتباه یا خراب است، از کل جمله و فضای صحنه برای فهم آن استفاده کن.\n"
+            "اگر یک بخش واضحاً اشتباه OCR شده، معنای محتمل را بازسازی کن.\n"
+            "اما چیزی از خودت اختراع نکن که با صحنه سازگار نیست.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "تست نهایی\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "قبل از تحویل هر دیالوگ، سه سؤال را از خودت بپرس:\n"
+            "۱. اگر این را یک ایرانی در مکالمه بگوید، طبیعی به گوش می‌رسد؟\n"
+            "۲. اگر متن انگلیسی را نبینم، باز هم این جمله مثل یک دیالوگ اصیل فارسی به نظر می‌رسد؟\n"
+            "۳. شخصیت واقعاً همین‌طوری حرف می‌زند؟\n"
+            "اگر جواب یکی از این‌ها «نه» بود، ترجمه را دوباره بساز.\n\n"
+            "هدف نهایی:\n"
+            "خواننده نباید هنگام خواندن دیالوگ به یاد ترجمه بیفتد.\n"
+            "باید فقط صحنه را ببیند و حرف شخصیت را بشنود.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "نمونه برای فهم فلسفه، نه برای تقلید\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "What the hell are you doing?\n"
+            "→ داری چه غلطی می‌کنی؟\n\n"
+            "I didn't come here to talk.\n"
+            "→ نیومدم اینجا حرف بزنم.\n\n"
+            "Don't look at me like that.\n"
+            "→ این‌جوری نگام نکن.\n\n"
+            "You're kidding, right?\n"
+            "→ داری شوخی می‌کنی، نه؟\n\n"
+            "I can't believe you actually did that.\n"
+            "→ باورم نمی‌شه واقعاً این کارو کردی.\n\n"
+            "What?! I'm not a girl!\n"
+            "→ چی؟! من دختر نیستم!\n\n"
+            "این مثال‌ها فقط نشان می‌دهند خروجی باید «حرفِ واقعی» باشد، نه ترجمه‌ی لفظ‌به‌لفظ.\n"
+            "عبارت‌ها را کورکورانه کپی نکن.\n\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "قانون آخر\n"
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "در هر تعارض، این ترتیب اولویت را رعایت کن:\n"
+            "طبیعی بودن فارسی > صدای شخصیت > انتقال احساس و نیت > انتقال معنی > شباهت لفظی به انگلیسی\n\n"
+            "اسم‌های خاص را حفظ یا طبیعی نویسه‌گردانی کن.\n"
+            "هیچ توضیحی درباره‌ی روند کار نده.\n"
+            "فقط JSON معتبر برگردان.\n"
+            "هر آیتم: {\"id\": عدد, \"translation\": \"متن فارسی\", "
+            "\"names\": [{\"source\": \"...\", \"persian\": \"...\"}]}"
         )
 
+    @staticmethod
+    def _cleanup_translation(t: str) -> str:
+        
+        if not t:
+            return t
+        
+        t = t.replace("?", "؟")
+        t = re.sub(r"\s+([؟!.,،])", r"\1", t)
+        return t.strip()
+
     def _parse_translation_response(self, text: str, regions: List[TextRegion]) -> bool:
+        
         text = text.strip()
+        
         if text.startswith("```"):
             text = re.sub(r"^```(?:json)?\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
         try:
             results = json.loads(text)
         except json.JSONDecodeError:
+            
             m = re.search(r"\[[\s\S]*\]", text)
             if not m:
                 raise
@@ -1306,7 +1451,7 @@ class MangaTranslator:
         for region in regions:
             t = by_id.get(region.id, "").strip()
             if t:
-                region.translated_text = t
+                region.translated_text = self._cleanup_translation(t)
                 applied += 1
 
         for item in results:
@@ -1362,6 +1507,7 @@ class MangaTranslator:
             ],
             temperature=self.translation_temperature,
         )
+        
         mlow = self.model_name.lower()
         if any(x in mlow for x in ("gpt-4", "gpt-3.5", "gpt-5", "o1", "o3", "o4")):
             kwargs["response_format"] = {"type": "json_object"}
@@ -1376,12 +1522,19 @@ class MangaTranslator:
         if not regions:
             return
 
+        
         payload = [{"id": r.id, "text": uncensor_swears(r.source_text)} for r in regions]
         system_instruction = self._get_system_instruction()
         user_prompt = (
-            "دیالوگ‌های صفحه مانهوا (ممکنه OCR خراب باشه). "
-            "فارسی خودمونی، فحش کامل، کتابی ممنوع.\n"
-            "خروجی فقط JSON آرایه:\n"
+            "این‌ها دیالوگ‌های استخراج‌شده از یک صفحه‌ی مانهوا هستند.\n\n"
+            "متن ممکن است OCR خراب، ناقص، چسبیده یا دارای غلط باشد.\n"
+            "با توجه به ترتیب دیالوگ‌ها و معنای احتمالی صحنه، هر مورد را به شکل یک دیالوگ طبیعی فارسی بازآفرینی کن.\n\n"
+            "اصل مهم:\n"
+            "ترجمه نکن؛ دیالوگ را دوباره به فارسی بساز.\n"
+            "خروجی باید طوری باشد که انگار نویسنده از اول آن صحنه را به فارسی نوشته.\n"
+            "نه اینکه یک مترجم انگلیسی را به فارسی برگردانده باشد.\n\n"
+            "هیچ توضیح، تحلیل، ترجمه‌ی میانی یا متن اضافه ننویس.\n"
+            "فقط JSON معتبر مطابق ساختار ورودی برگردان.\n\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
 
@@ -1396,6 +1549,7 @@ class MangaTranslator:
                 else:
                     text = self._translate_with_openai(user_prompt, system_instruction)
 
+                
                 try:
                     cleaned = text.strip()
                     if cleaned.startswith("```"):
@@ -1408,6 +1562,7 @@ class MangaTranslator:
                                 text = json.dumps(parsed[key], ensure_ascii=False)
                                 break
                         else:
+                            
                             if "id" in parsed and "translation" in parsed:
                                 text = json.dumps([parsed], ensure_ascii=False)
                 except Exception:
@@ -1420,8 +1575,8 @@ class MangaTranslator:
                     print(f"    [!] {len(missing)} حباب بدون ترجمه؛ تلاش مجدد...")
                     payload2 = [{"id": r.id, "text": uncensor_swears(r.source_text)} for r in missing]
                     user_prompt = (
-                        "اینا موندن ترجمه بشن. همون لحن خیابونی خودمونی؛ "
-                        "فحش کامل، کتابی ممنوع. فقط JSON آرایه:\n"
+                        "اینا موندن بازآفرینی بشن. ترجمه نکن؛ دیالوگ طبیعی فارسی بساز. "
+                        "فقط JSON معتبر:\n"
                         f"{json.dumps(payload2, ensure_ascii=False, indent=2)}"
                     )
                     work_regions = missing
@@ -1436,6 +1591,7 @@ class MangaTranslator:
                 last_err = e
                 err_str = str(e).lower()
 
+                
                 if self.provider_type == "gemini" and _HAS_GEMINI:
                     if isinstance(e, genai_errors.ClientError) if genai_errors else False:
                         if self._is_daily_quota_error(e):
@@ -1463,6 +1619,7 @@ class MangaTranslator:
                             time.sleep(min(delay, 3))
                             continue
 
+                
                 if any(x in err_str for x in ("rate limit", "429", "quota", "insufficient_quota")):
                     print(f"    [!] محدودیت نرخ/سهمیه ({self.provider})...")
                     if self._switch_to_next_key(reason="rate/quota", cycle=True):
