@@ -154,15 +154,6 @@ cd Manga-AutoTranslate
 python -m venv .venv
 source .venv/bin/activate   # ویندوز: .venv\Scripts\activate
 
-# وابستگی‌های مشترک
-pip install -r requirements.txt
-
-# برای Gemini
-pip install google-genai
-
-# برای OpenAI / DeepSeek / Groq / xAI / ...
-pip install openai
-
 bash run.sh                 # ویندوز: run.bat
 ```
 
