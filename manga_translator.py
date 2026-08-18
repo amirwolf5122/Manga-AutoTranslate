@@ -409,6 +409,7 @@ class MangaTranslator:
         stitch_max_height: int = 16000,
         stitch_short_threshold: int = 6000,
         stitch_keep_first: bool = True,
+        debug: bool = False,
     ):
         provider = (provider or "gemini").lower().strip()
         if provider not in PROVIDER_PRESETS:
@@ -460,6 +461,8 @@ class MangaTranslator:
         self.stitch_max_height = int(stitch_max_height) if stitch_max_height else 0
         self.stitch_short_threshold = int(stitch_short_threshold) if stitch_short_threshold else 0
         self.stitch_keep_first = bool(stitch_keep_first)
+        self.debug = bool(debug)
+        self._last_debug_image = None  
 
         self._name_glossary: Dict[str, str] = {}
         self._lama = None
@@ -973,11 +976,23 @@ class MangaTranslator:
             return "dialogue"
 
         digits_only = re.sub(r"[^\d]", "", stripped)
+        
+        is_progress = bool(re.fullmatch(
+            r"[\(\[\{]?\s*\d+\s*/\s*\d+\s*[\)\]\}]?",
+            stripped,
+        ))
+        if is_progress:
+            return "dialogue"
         if stripped.isdigit() or re.fullmatch(r"[\d\s.%oO]+", stripped):
             return "junk"
+        
+        if re.fullmatch(r"[A-Za-z]?\d{2,6}", stripped) and len(stripped) <= 7:
+            return "sfx"
         if digits_only and len(stripped) <= 12:
             non_digit_alpha = re.sub(r"[\d\s.%oO]", "", stripped)
-            if len(non_digit_alpha) <= 4:
+            
+            non_digit_alpha = re.sub(r"[/()\[\]{}]", "", non_digit_alpha)
+            if len(non_digit_alpha) <= 2:
                 return "junk"
         if len(alpha_only) <= 1 and len(stripped) <= 3 and stripped.upper() != "I":
             return "junk"
@@ -1072,8 +1087,14 @@ class MangaTranslator:
                     break
             if dup_idx is None:
                 kept.append(d)
-            elif d["conf"] > kept[dup_idx]["conf"]:
-                kept[dup_idx] = d
+            else:
+                
+                cur = kept[dup_idx]
+                better_conf = d["conf"] > cur["conf"] + 0.05
+                similar_conf = abs(d["conf"] - cur["conf"]) <= 0.05
+                longer = len(d.get("text") or "") > len(cur.get("text") or "")
+                if better_conf or (similar_conf and longer):
+                    kept[dup_idx] = d
         return kept
 
     def group_into_regions(self, detections: List[dict], y_offset: int = 0) -> List[TextRegion]:
@@ -1120,44 +1141,107 @@ class MangaTranslator:
             h_overlap_max = max(0.0, xi2 - xi1) / max(1.0, max(w1, w2))
             return vgap, hgap, avg_h, h_overlap_min, h_overlap_max, abs(cx1 - cx2), max(h1, h2), min(h1, h2), min(w1, w2)
 
-        def likely_same_bubble(r1, r2):
+        def likely_same_bubble(r1, r2, consecutive: bool = False):
             
             vgap, hgap, avg_h, h_ov_min, h_ov_max, cx_dist, h_max, h_min, w_min = pair_metrics(r1, r2)
-            if h_max > h_min * 2.3:
+            
+            
+            height_ratio_limit = 3.2 if consecutive else 2.5
+            if h_max > h_min * height_ratio_limit:
                 return False
 
             
-            if cx_dist > max(w_min * 0.55, 40):
-                
-                if h_ov_max < 0.45:
+            if cx_dist > max(w_min * 0.70, 55):
+                if h_ov_max < 0.28:
                     return False
 
             
-            abs_max_vgap = max(42.0, avg_h * 1.25)
-            if -avg_h * 0.3 <= vgap <= abs_max_vgap:
-                if h_ov_min >= 0.40 and h_ov_max >= 0.28:
+            abs_max_vgap = max(55.0, avg_h * 1.55)
+            if consecutive:
+                
+                abs_max_vgap = max(48.0, avg_h * 1.35)
+
+            if -avg_h * 0.45 <= vgap <= abs_max_vgap:
+                
+                if h_ov_min >= 0.22 and h_ov_max >= 0.15:
                     return True
-                if cx_dist <= max(w_min * 0.35, 28) and h_ov_min >= 0.25:
+                
+                if cx_dist <= max(w_min * 0.55, 45) and h_ov_min >= 0.12:
                     return True
+                
+                
+                if consecutive and vgap <= max(32.0, avg_h * 0.95):
+                    if cx_dist > max(w_min * 0.90, 95) and h_ov_max < 0.22:
+                        return False
+                    if cx_dist <= max(w_min * 0.65, 65) or h_ov_max >= 0.20:
+                        return True
 
             
-            if hgap <= max(self.group_margin * 2, avg_h * 0.55, 14):
-                if abs((r1[1] + r1[3] / 2) - (r2[1] + r2[3] / 2)) <= avg_h * 0.45:
+            if hgap <= max(self.group_margin * 2.2, avg_h * 0.55, 15):
+                if abs((r1[1] + r1[3] / 2) - (r2[1] + r2[3] / 2)) <= avg_h * 0.55:
                     return True
             return False
 
-        merge_margin = max(self.group_margin, 10)
+        def kinds_compatible(i, j):
+            
+            ki = detections[i].get("kind", "dialogue")
+            kj = detections[j].get("kind", "dialogue")
+            if ki == kj:
+                return True
+            
+            if ki == "junk" or kj == "junk":
+                return False
+            
+            if ki == "promo" or kj == "promo":
+                return False
+            
+            if ki == "sfx" or kj == "sfx":
+                return False
+            return True
+
+        merge_margin = max(self.group_margin, 12)
         for i in range(n):
             for j in range(i + 1, n):
+                if not kinds_compatible(i, j):
+                    continue
                 if expanded_overlap(rects[i], rects[j], merge_margin) and likely_same_bubble(rects[i], rects[j]):
                     union(i, j)
 
         
+        
         order = sorted(range(n), key=lambda i: (rects[i][1] + rects[i][3] / 2.0, rects[i][0]))
         for a in range(len(order) - 1):
             i, j = order[a], order[a + 1]
-            if likely_same_bubble(rects[i], rects[j]):
+            if not kinds_compatible(i, j):
+                continue
+            vgap, hgap, avg_h, h_ov_min, h_ov_max, cx_dist, h_max, h_min, w_min = pair_metrics(rects[i], rects[j])
+            
+            if vgap <= max(38.0, avg_h * 1.15) and likely_same_bubble(rects[i], rects[j], consecutive=True):
                 union(i, j)
+            
+            
+            elif vgap <= max(26.0, avg_h * 0.85) and cx_dist <= max(w_min * 0.55, 48):
+                if h_max <= h_min * 2.8 and h_ov_max >= 0.22:
+                    union(i, j)
+
+        
+        
+        for i in range(n):
+            for j in range(i + 1, n):
+                if find(i) == find(j):
+                    continue
+                if not kinds_compatible(i, j):
+                    continue
+                vgap, hgap, avg_h, h_ov_min, h_ov_max, cx_dist, h_max, h_min, w_min = pair_metrics(rects[i], rects[j])
+                
+                if vgap < -avg_h * 0.2 or vgap > max(28.0, avg_h * 0.95):
+                    continue
+                if h_max > h_min * 4.0:
+                    continue
+                
+                if h_ov_max >= 0.18 or cx_dist <= max(w_min * 0.75, 65):
+                    if h_ov_min >= 0.12 or cx_dist <= max(w_min * 0.55, 50):
+                        union(i, j)
 
         groups = {}
         for i in range(n):
@@ -1278,6 +1362,113 @@ class MangaTranslator:
             if not is_dup:
                 unique.append(r)
         return unique
+
+
+    @staticmethod
+    def _merge_vertically_stacked_regions(regions: List[TextRegion], max_vgap: float = 36.0) -> List[TextRegion]:
+        if len(regions) <= 1:
+            return regions
+
+        n = len(regions)
+        parent = list(range(n))
+
+        def find(a):
+            while parent[a] != a:
+                parent[a] = parent[parent[a]]
+                a = parent[a]
+            return a
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+
+        def metrics(r1: TextRegion, r2: TextRegion):
+            x1, y1, w1, h1 = r1.rect
+            x2, y2, w2, h2 = r2.rect
+            cy1, cy2 = y1 + h1 / 2.0, y2 + h2 / 2.0
+            cx1, cx2 = x1 + w1 / 2.0, x2 + w2 / 2.0
+            vgap = abs(cy1 - cy2) - (h1 + h2) / 2.0
+            avg_h = max(1.0, (h1 + h2) / 2.0)
+            xi1, xi2 = max(x1, x2), min(x1 + w1, x2 + w2)
+            h_ov = max(0.0, xi2 - xi1) / max(1.0, min(w1, w2))
+            h_ov_max = max(0.0, xi2 - xi1) / max(1.0, max(w1, w2))
+            cx_dist = abs(cx1 - cx2)
+            return vgap, avg_h, h_ov, h_ov_max, cx_dist, max(h1, h2), min(h1, h2), min(w1, w2)
+
+        for i in range(n):
+            for j in range(i + 1, n):
+                
+                k1 = getattr(regions[i], "kind", "dialogue")
+                k2 = getattr(regions[j], "kind", "dialogue")
+                if k1 == "promo" or k2 == "promo":
+                    continue
+                if k1 == "sfx" or k2 == "sfx":
+                    
+                    if k1 != k2:
+                        continue
+                vgap, avg_h, h_ov, h_ov_max, cx_dist, h_max, h_min, w_min = metrics(regions[i], regions[j])
+                
+                if vgap < -avg_h * 0.3 or vgap > max(max_vgap, avg_h * 0.85):
+                    continue
+                if h_max > h_min * 4.5:
+                    continue
+                h1 = regions[i].rect[3]
+                h2 = regions[j].rect[3]
+                w1 = regions[i].rect[2]
+                w2 = regions[j].rect[2]
+                both_substantial = (h1 > avg_h * 2.2 and h2 > avg_h * 2.2) or (h1 > 90 and h2 > 90)
+                if both_substantial and vgap > 12:
+                    continue
+                
+                area1 = w1 * h1
+                area2 = w2 * h2
+                small_area, large_area = min(area1, area2), max(area1, area2)
+                if large_area > 0 and small_area < large_area * 0.40:
+                    
+                    if cx_dist > max(w_min * 0.35, 28):
+                        continue
+                
+                if h_ov >= 0.30 and cx_dist <= max(w_min * 0.55, 45):
+                    union(i, j)
+                elif (h1 < 55 or h2 < 55) and vgap <= 20:
+                    
+                    if cx_dist <= max(w_min * 0.45, 35) and h_ov >= 0.15:
+                        union(i, j)
+
+        groups = {}
+        for i in range(n):
+            groups.setdefault(find(i), []).append(i)
+
+        merged: List[TextRegion] = []
+        for idxs in groups.values():
+            if len(idxs) == 1:
+                merged.append(regions[idxs[0]])
+                continue
+            idxs_sorted = sorted(idxs, key=lambda i: regions[i].rect[1])
+            boxes = []
+            for i in idxs_sorted:
+                boxes.extend(regions[i].boxes)
+            xs = [regions[i].rect[0] for i in idxs_sorted]
+            ys = [regions[i].rect[1] for i in idxs_sorted]
+            xe = [regions[i].rect[0] + regions[i].rect[2] for i in idxs_sorted]
+            ye = [regions[i].rect[1] + regions[i].rect[3] for i in idxs_sorted]
+            x0, y0, x1, y1 = min(xs), min(ys), max(xe), max(ye)
+            text = " ".join(regions[i].source_text for i in idxs_sorted if regions[i].source_text)
+            angles = [regions[i].angle for i in idxs_sorted]
+            avg_angle = float(sum(angles) / len(angles)) if angles else 0.0
+            kind = MangaTranslator._classify_text(text)
+            merged.append(
+                TextRegion(
+                    id=idxs_sorted[0],
+                    boxes=boxes,
+                    source_text=text,
+                    rect=(x0, y0, x1 - x0, y1 - y0),
+                    angle=avg_angle,
+                    kind=kind,
+                )
+            )
+        return merged
 
     def _build_text_mask(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
         h_img, w_img = image.shape[:2]
@@ -1577,23 +1768,63 @@ class MangaTranslator:
             raise RuntimeError(f"پاسخ خالی از {self.provider} دریافت شد.")
         return text
 
+
+    @staticmethod
+    def _fix_ocr_text(text: str) -> str:
+        
+        if not text:
+            return text
+        t = text
+        
+        t = re.sub(r"\s+", " ", t).strip()
+        
+        replacements = [
+            (r"\bMUDI[:]?YING\b", "MODIFYING"),
+            (r"\bMODIEYING\b", "MODIFYING"),
+            (r"\bMODIFYlNG\b", "MODIFYING"),
+            (r"\bRECONSTRUC(?:TION)?\b", "RECONSTRUCTION"),
+            (r"\bRECONSTRUC\b", "RECONSTRUCTION"),
+            (r"\bPROCES\b", "PROCESS"),
+            (r"\bPARALYZE[D]?\b", "PARALYZED"),
+            (r"\bMANA\b", "MANA"),
+            (r"\bAND\s+YE\b", "AND YET"),
+            (r"\bNDYE\b", "AND YET"),
+            (r"\bONL\b", "ONLY"),
+            (r"\bMYE\b", "MY"),
+            (r"\bUNSCATHED\b", "UNSCATHED"),
+            (r"\bUNFORESEEN\b", "UNFORESEEN"),
+            (r"\bOVERCONSUMPTION\b", "OVERCONSUMPTION"),
+            (r"\bRECONSTRUCTION\s+PROCES\b", "RECONSTRUCTION PROCESS"),
+            (r"\bBODY\s+RECONSTRUCTION\b", "BODY RECONSTRUCTION"),
+        ]
+        for pat, rep in replacements:
+            t = re.sub(pat, rep, t, flags=re.IGNORECASE)
+        
+        t = re.sub(r"([A-Za-z])[:;|]([A-Za-z])", r"\1\2", t)
+        return t.strip()
+
     def translate_regions(self, regions: List[TextRegion]) -> None:
         if not regions:
             return
 
         
-        payload = [{"id": r.id, "text": uncensor_swears(r.source_text)} for r in regions]
+        
+        for r in regions:
+            r.source_text = self._fix_ocr_text(uncensor_swears(r.source_text or ""))
+
+        payload = [{"id": r.id, "text": r.source_text} for r in regions]
         system_instruction = self._get_system_instruction()
         user_prompt = (
             "این‌ها دیالوگ‌های استخراج‌شده از یک صفحه‌ی مانهوا هستند.\n\n"
-            "متن ممکن است OCR خراب، ناقص، چسبیده یا دارای غلط باشد.\n"
-            "با توجه به ترتیب دیالوگ‌ها و معنای احتمالی صحنه، هر مورد را به شکل یک دیالوگ طبیعی فارسی بازآفرینی کن.\n\n"
+            "متن‌ها از OCR آمده‌اند و ممکن است خراب، ناقص، چسبیده یا دارای غلط املایی باشند.\n"
+            "قبل از بازآفرینی فارسی، اول متن انگلیسی هر مورد را در ذهن خودت اصلاح کن "
+            "(مثلاً MUDIYING→MODIFYING، NDYE/AND YE→AND YET، RECONSTRUC→RECONSTRUCTION).\n"
+            "سپس با توجه به ترتیب دیالوگ‌ها و بافت صحنه، هر مورد را به شکل یک دیالوگ کاملاً طبیعی فارسی بازآفرینی کن.\n\n"
             "اصل مهم:\n"
-            "ترجمه نکن؛ دیالوگ را دوباره به فارسی بساز.\n"
-            "خروجی باید طوری باشد که انگار نویسنده از اول آن صحنه را به فارسی نوشته.\n"
-            "نه اینکه یک مترجم انگلیسی را به فارسی برگردانده باشد.\n\n"
-            "هیچ توضیح، تحلیل، ترجمه‌ی میانی یا متن اضافه ننویس.\n"
-            "فقط JSON معتبر مطابق ساختار ورودی برگردان.\n\n"
+            "ترجمه تحت‌اللفظی نکن؛ دیالوگ را طوری بنویس که انگار از اول به فارسی نوشته شده.\n"
+            "اگر دو حباب پشت‌سرهم ادامه‌ی یک فکر هستند، لحن را پیوسته نگه دار.\n\n"
+            "هیچ توضیح، تحلیل یا متن اضافه ننویس.\n"
+            "فقط JSON معتبر مطابق ساختار ورودی برگردان (هر آیتم: id + translation).\n\n"
             f"{json.dumps(payload, ensure_ascii=False, indent=2)}"
         )
 
@@ -1632,7 +1863,7 @@ class MangaTranslator:
                 missing = [r for r in work_regions if not r.translated_text]
                 if missing and attempt < self.max_retries:
                     print(f"    [!] {len(missing)} حباب بدون ترجمه؛ تلاش مجدد...")
-                    payload2 = [{"id": r.id, "text": uncensor_swears(r.source_text)} for r in missing]
+                    payload2 = [{"id": r.id, "text": r.source_text} for r in missing]
                     user_prompt = (
                         "اینا موندن بازآفرینی بشن. ترجمه نکن؛ دیالوگ طبیعی فارسی بساز. "
                         "فقط JSON معتبر:\n"
@@ -1908,9 +2139,72 @@ class MangaTranslator:
             bw = cv2.dilate(bw, np.ones((2, 2), np.uint8), iterations=1)
             bw_bgr = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
             detections += self.detect_text(bw_bgr)
+            
+            try:
+                h_p, w_p = piece.shape[:2]
+                if max(h_p, w_p) < 3200:
+                    scale = 1.5
+                    up_inv = cv2.resize(inverted, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                    up_inv_dets = self.detect_text(up_inv)
+                    for d in up_inv_dets:
+                        d["poly"] = (d["poly"].astype(np.float32) / scale).astype(np.int32)
+                    detections += up_inv_dets
+            except Exception:
+                pass
             detections = self._dedupe_detections(detections)
 
         return self.group_into_regions(detections, y_offset=y0)
+
+
+    def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
+        vis = image.copy()
+        color_map = {
+            "dialogue": (0, 0, 255),      
+            "promo": (0, 140, 255),       
+            "sfx": (255, 200, 0),         
+            "junk": (128, 128, 128),      
+        }
+        for r in regions:
+            kind = getattr(r, "kind", "dialogue") or "dialogue"
+            color = color_map.get(kind, (0, 0, 255))
+            x, y, w, h = r.rect
+            
+            cv2.rectangle(vis, (x, y), (x + w, y + h), color, 3)
+            
+            for poly in r.boxes:
+                pts = np.array(poly, dtype=np.int32).reshape((-1, 1, 2))
+                cv2.polylines(vis, [pts], isClosed=True, color=color, thickness=1)
+
+            
+            tag = {"dialogue": "TXT", "promo": "PROMO", "sfx": "SFX", "junk": "JUNK"}.get(kind, kind)
+            label = f"[{r.id}] {tag}"
+            
+            (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+            ly = max(0, y - 6)
+            cv2.rectangle(vis, (x, ly - th - 4), (x + tw + 6, ly + 2), (0, 0, 0), -1)
+            cv2.putText(
+                vis, label, (x + 3, ly - 2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA,
+            )
+            
+            src = (r.source_text or "")[:40]
+            if src:
+                cv2.putText(
+                    vis, src, (x + 3, min(y + h + 16, vis.shape[0] - 4)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA,
+                )
+        
+        legend = [
+            ("dialogue = RED", (0, 0, 255)),
+            ("promo = ORANGE", (0, 140, 255)),
+            ("sfx = CYAN", (255, 200, 0)),
+            ("junk = GRAY", (128, 128, 128)),
+        ]
+        ly = 24
+        for txt, col in legend:
+            cv2.putText(vis, txt, (10, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
+            ly += 22
+        return vis
 
     def process_core(self, image: np.ndarray) -> np.ndarray:
         h, w = image.shape[:2]
@@ -1938,6 +2232,8 @@ class MangaTranslator:
                     all_raw_regions.extend(res)
 
         unique_regions = self._deduplicate_regions(all_raw_regions)
+        
+        unique_regions = self._merge_vertically_stacked_regions(unique_regions, max_vgap=22.0)
         if self.reading_order == "rtl":
             unique_regions.sort(key=lambda r: (r.rect[1] // 80, -(r.rect[0] + r.rect[2])))
         else:
@@ -1961,6 +2257,14 @@ class MangaTranslator:
         for r in unique_regions:
             tag = {"dialogue": "متن", "promo": "تبلیغ", "sfx": "SFX", "junk": "junk"}.get(r.kind, r.kind)
             print(f"  [{r.id}] ({tag}) {r.source_text}")
+
+        
+        if self.debug:
+            debug_vis = self._draw_debug_regions(image, unique_regions)
+            self._last_debug_image = debug_vis
+            print(f"  [*] DEBUG: تصویر دیباگ با {len(unique_regions)} مربع آماده شد.")
+        else:
+            self._last_debug_image = None
 
         raw_image_copy = image.copy()
 
@@ -2914,6 +3218,17 @@ html, body { background: #0a0a0b; }
             self._write_image(result, out_file)
             processed_files.append(out_file)
 
+            
+            if self.debug and self._last_debug_image is not None:
+                debug_dir = os.path.join(cache_dir, "debug")
+                os.makedirs(debug_dir, exist_ok=True)
+                dbg_name = os.path.splitext(os.path.basename(out_file))[0] + "_debug.jpg"
+                dbg_path = os.path.join(debug_dir, dbg_name)
+                self._write_image(self._last_debug_image, dbg_path)
+                print(f"  [*] DEBUG ذخیره شد: {dbg_path}")
+                
+                self._last_debug_image = None
+
         if skipped:
             print(f"[*] {skipped} صفحه از قبل توی کش بود و دوباره پردازش نشد (resume فعاله).")
 
@@ -2998,6 +3313,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--mag-ratio", type=float, default=1.35)
     p.add_argument("--no-two-pass-ocr", action="store_true")
     p.add_argument("--temperature", type=float, default=0.85)
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="حالت دیباگ: مربع رنگی دور هر بلوک متن روی تصویر (ذخیره در *.cache/debug/)",
+    )
     return p
 
 
@@ -3070,6 +3390,7 @@ def main():
         stitch_max_height=args.stitch_max_height,
         stitch_short_threshold=args.stitch_short_threshold,
         stitch_keep_first=not args.no_stitch_keep_first,
+        debug=bool(getattr(args, "debug", False)),
     )
     translator.run(
         args.input,
