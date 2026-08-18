@@ -1989,6 +1989,75 @@ class MangaTranslator:
         return s.lower().startswith("http://") or s.lower().startswith("https://")
 
     @staticmethod
+    def _expand_input_urls(input_str: str) -> List[str]:
+        import requests
+
+        parts = [p.strip() for p in input_str.split(",") if p.strip()]
+        if not parts:
+            return []
+
+        expanded: List[str] = []
+
+        for part in parts:
+            if "*" not in part:
+                expanded.append(part)
+                continue
+
+            m = re.search(r"(.*?)(\d*)\*(\d*)(.*)", part)
+            if not m:
+                print(f"[!] الگوی * قابل تشخیص نیست: {part}")
+                expanded.append(part)
+                continue
+
+            prefix = m.group(1)
+            suffix = m.group(4)
+
+            print(f"[*] در حال پیدا کردن فصل‌های موجود برای الگو: {part}")
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                )
+            }
+
+            found = []
+            consecutive_fail = 0
+            max_fail = 5
+            max_chapters = 500
+
+            for n in range(1, max_chapters + 1):
+                candidate = f"{prefix}{n}{suffix}"
+                try:
+                    r = requests.head(
+                        candidate, headers=headers, timeout=12, allow_redirects=True
+                    )
+                    if r.status_code == 200:
+                        found.append(candidate)
+                        consecutive_fail = 0
+                        print(f"    [+] فصل {n} پیدا شد")
+                    else:
+                        consecutive_fail += 1
+                except Exception:
+                    consecutive_fail += 1
+
+                if consecutive_fail >= max_fail:
+                    break
+
+            if found:
+                print(f"[*] مجموعاً {len(found)} فصل پیدا شد.")
+                expanded.extend(found)
+            else:
+                print(f"[!] هیچ فصلی با الگو پیدا نشد: {part}")
+
+        seen = set()
+        unique = []
+        for u in expanded:
+            if u not in seen:
+                seen.add(u)
+                unique.append(u)
+        return unique
+    @staticmethod
     def _normalize_image_url(url: str) -> str:
         if "github.com/" in url and "/blob/" in url:
             url = url.replace("github.com/", "raw.githubusercontent.com/").replace("/blob/", "/")
@@ -2667,6 +2736,28 @@ html, body { background: #0a0a0b; }
         if self._is_url(input_path):
             print(f"[*] دانلود تصاویر از لینک: {input_path}")
             image_files = self._download_images_from_url(input_path, src_dir)
+        if self._is_url(input_path) or "," in input_path or "*" in input_path:
+            urls = self._expand_input_urls(input_path)
+
+            if not urls:
+                print("[!] هیچ لینک معتبری پیدا نشد.", file=sys.stderr)
+                return
+
+            if len(urls) == 1:
+                print(f"[*] دانلود تصاویر از لینک: {urls[0]}")
+                image_files = self._download_images_from_url(urls[0], src_dir)
+            else:
+                print(f"[*] {len(urls)} فصل پیدا شد. هر فصل جداگانه پردازش می‌شه...")
+                for i, url in enumerate(urls, 1):
+                    print(f"\n{'='*60}")
+                    print(f"[فصل {i}/{len(urls)}] {url}")
+                    print(f"{'='*60}")
+                    chapter_out = self._auto_output_path(url, output_path)
+                    if not os.path.splitext(chapter_out)[1]:
+                        chapter_out = os.path.join(output_path, os.path.basename(chapter_out.rstrip("/\\")))
+
+                    self.run(url, chapter_out, resume=resume, clean_old=False)
+                return
         elif input_path.lower().endswith(".zip"):
             print(f"[*] استخراج فایل zip: {input_path}")
             image_files = self._extract_zip(input_path, src_dir)
