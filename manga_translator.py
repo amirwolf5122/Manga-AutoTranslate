@@ -240,38 +240,72 @@ def uncensor_swears(text: str) -> str:
     if not text:
         return text
 
+    result = text
+
+    
+    
+    result = re.sub(
+        r"\bwhat\s*the\s*f+[*@#$%^&._\-]*\b",
+        "what the fuck ",
+        result,
+        flags=re.IGNORECASE,
+    )
+    result = re.sub(r"\bwhat\s*theF\b", "what the fuck", result, flags=re.IGNORECASE)
+    result = re.sub(r"\btheF\b", "the fuck", result, flags=re.IGNORECASE)
+    result = re.sub(r"\bw+t+f+\b", "what the fuck", result, flags=re.IGNORECASE)
+    result = re.sub(
+        r"\bthe\s*f+(?:uck)?\s*is\b",
+        "the fuck is",
+        result,
+        flags=re.IGNORECASE,
+    )
+
     replacements = [
+        
         (r"\bf+u+[*@#$%^&._\-]*c+k+i+n+g?\b", "fucking"),
         (r"\bf+u+[*@#$%^&._\-]*c+k+\b", "fuck"),
         (r"\bf+[*@#$%^&._\-]+c+k+\b", "fuck"),
+        (r"\bf[*@#$%^&._\-]{1,5}ck(?:ing)?\b", "fuck"),
+        
+        (r"\bf+[*@#$%^&._\-]*o+k+\b(?=[?!.,…]|$|\s)", "fuck"),
+        (r"\bfck\b", "fuck"),
+        (r"\bfuk\b", "fuck"),
+        
         (r"\bs+h+[*@#$%^&._\-]*i+t+\b", "shit"),
         (r"\bs+h+[*@#$%^&._\-]+t+\b", "shit"),
+        (r"\bsh[*@#$%^&._\-]{1,4}t\b", "shit"),
+        (r"\bsht\b", "shit"),
+        
         (r"\bb+i+[*@#$%^&._\-]*t+c+h+\b", "bitch"),
         (r"\bb+[*@#$%^&._\-]+t+c+h+\b", "bitch"),
+        (r"\bb[*@#$%^&._\-]{1,4}tch\b", "bitch"),
+        
         (r"\ba+s+s+[*@#$%^&._\-]*h+o+l+e+\b", "asshole"),
         (r"\ba+r+s+e+[*@#$%^&._\-]*h+o+l+e+\b", "arsehole"),
+        (r"\ba[*@#$%^&._\-]{1,4}shole\b", "asshole"),
+        
         (r"\bd+a+m+n+\b", "damn"),
         (r"\bd+a+m+m+i+t+\b", "dammit"),
         (r"\bd+i+c+k+\b", "dick"),
+        (r"\bd[*@#$%^&._\-]{1,4}ck\b", "dick"),
         (r"\bc+o+c+k+\b", "cock"),
         (r"\bp+u+s+s+y+\b", "pussy"),
         (r"\bc+u+n+t+\b", "cunt"),
+        (r"\bc[*@#$%^&._\-]{1,4}nt\b", "cunt"),
         (r"\bm+o+t+h+e+r+f+u+c+k+e+r+\b", "motherfucker"),
         (r"\bm+o+t+h+e+r+[*@#$%^&._\-]*f+u+c+k+e+r+\b", "motherfucker"),
         (r"\bb+a+s+t+a+r+d+\b", "bastard"),
         (r"\bh+e+l+l+\b", "hell"),
-        (r"\bf[*@#$%^&._\-]{1,4}ck\b", "fuck"),
-        (r"\bsh[*@#$%^&._\-]{1,4}t\b", "shit"),
-        (r"\bb[*@#$%^&._\-]{1,4}tch\b", "bitch"),
-        (r"\ba[*@#$%^&._\-]{1,4}shole\b", "asshole"),
-        (r"\bd[*@#$%^&._\-]{1,4}ck\b", "dick"),
-        (r"\bc[*@#$%^&._\-]{1,4}nt\b", "cunt"),
+        (r"\bg+o+d\s*d+a+m+n?\b", "goddamn"),
+        (r"\bd+a+m+n\s*i+t\b", "dammit"),
     ]
 
-    result = text
     for pattern, repl in replacements:
         result = re.sub(pattern, repl, result, flags=re.IGNORECASE)
-    return result
+
+    result = re.sub(r"\s{2,}", " ", result)
+    result = re.sub(r"\s+([?!.,…])", r"\1", result)
+    return result.strip()
 
 
 class MangaTranslator:
@@ -373,6 +407,7 @@ class MangaTranslator:
         two_pass_ocr: bool = True,
         max_output_width: Optional[int] = None,
         stitch_max_height: int = 16000,
+        stitch_short_threshold: int = 6000,
         stitch_keep_first: bool = True,
     ):
         provider = (provider or "gemini").lower().strip()
@@ -423,6 +458,7 @@ class MangaTranslator:
         self.two_pass_ocr = two_pass_ocr
         self.max_output_width = max_output_width
         self.stitch_max_height = int(stitch_max_height) if stitch_max_height else 0
+        self.stitch_short_threshold = int(stitch_short_threshold) if stitch_short_threshold else 0
         self.stitch_keep_first = bool(stitch_keep_first)
 
         self._name_glossary: Dict[str, str] = {}
@@ -1383,14 +1419,23 @@ class MangaTranslator:
             "فحش باید مثل فحش واقعی فارسی انتخاب شود، نه ترجمه‌ی فرهنگ‌لغتی.\n"
             "اگر متن انگلیسی تند است، فارسی هم باید تند به نظر برسد.\n"
             "اگر فقط شوخی یا طعنه است، فحش را بی‌جهت سنگین نکن.\n"
-            "اگر متن اصلی فحش سانسور شده داشت (مثل fu*ck یا sh*t) کاملش کن و بعد بازآفرینی کن.\n\n"
+            "فحش سانسور یا OCRخراب خیلی رایج است؛ قبل از ترجمه معنیش را کامل کن:\n"
+            "  F*ck / F**k / F*ok / Fu*k / fck → fuck\n"
+            "  Sh*t / S**t → shit\n"
+            "  what theF / what the F / wtf → what the fuck\n"
+            "مثال:\n"
+            "  F*ok?! → چه غلطیه؟! / لعنتی!؟\n"
+            "  What the F is wrong with you? → چه مرگته؟ / عقلت پاره‌ست؟\n"
+            "هرگز حروف سانسور یا عدد/نماد چسبیده به فحش را عین متن به فارسی نبر.\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "OCR خراب\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "OCR را متن مقدس و دقیق فرض نکن.\n"
-            "اگر کلمه‌ای ناقص، چسبیده، اشتباه یا خراب است، از کل جمله و فضای صحنه برای فهم آن استفاده کن.\n"
+            "اگر کلمه‌ای ناقص، چسبیده، اشتباه، سانسور با * یا خراب است، "
+            "از کل جمله و فضای صحنه برای فهم آن استفاده کن.\n"
             "اگر یک بخش واضحاً اشتباه OCR شده، معنای محتمل را بازسازی کن.\n"
-            "اما چیزی از خودت اختراع نکن که با صحنه سازگار نیست.\n\n"
+            "اما چیزی از خودت اختراع نکن که با صحنه سازگار نیست.\n"
+            "عدد یا نماد بی‌معنی وسط کلمه (مثل گوهی5) را حذف کن و جمله را طبیعی بنویس.\n\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
             "تست نهایی\n"
             "━━━━━━━━━━━━━━━━━━━━\n"
@@ -2057,7 +2102,6 @@ class MangaTranslator:
                 seen.add(u)
                 unique.append(u)
         return unique
-
     @staticmethod
     def _normalize_image_url(url: str) -> str:
         if "github.com/" in url and "/blob/" in url:
@@ -2358,19 +2402,31 @@ class MangaTranslator:
             base = "chapter"
             if not parts:
                 base = "chapter"
-            elif "chapter" in [p.lower() for p in parts]:
-                low_parts = [p.lower() for p in parts]
-                try:
-                    idx = low_parts.index("chapter")
-                    name = parts[idx - 1] if idx > 0 else "chapter"
-                    num = parts[idx + 1] if idx + 1 < len(parts) else ""
-                    num = re.sub(r"[^\w\-]", "", num.split("?")[0])
-                    base = f"{name}-{num}" if num else name
-                except ValueError:
-                    base = parts[-1]
             else:
-                base = parts[-1]
-            base = re.sub(r"[^\w\-.]+", "-", base).strip("-._")
+                slug = parts[-1]
+                
+                m = re.search(
+                    r"(.+?-chapter[-_]?(?:\d+|\*))(?:[-_].*)?$",
+                    slug,
+                    flags=re.I,
+                )
+                if m:
+                    base = m.group(1)
+                elif "chapter" in [p.lower() for p in parts]:
+                    low_parts = [p.lower() for p in parts]
+                    try:
+                        idx = low_parts.index("chapter")
+                        name = parts[idx - 1] if idx > 0 else "chapter"
+                        num = parts[idx + 1] if idx + 1 < len(parts) else ""
+                        num = re.sub(r"[^\w\-]", "", num.split("?")[0])
+                        base = f"{name}-{num}" if num else name
+                    except ValueError:
+                        base = slug
+                else:
+                    base = slug
+            base = re.sub(r"\*+", "", base)
+            base = re.sub(r"[^\w\-.]+", "-", base)
+            base = re.sub(r"-{2,}", "-", base).strip("-._")
             if not base:
                 base = "chapter"
         else:
@@ -2635,13 +2691,21 @@ html, body { background: #0a0a0b; }
         if self.stitch_max_height <= 0 or len(image_files) <= 1:
             return image_files
 
+        short_max = (
+            self.stitch_short_threshold
+            if self.stitch_short_threshold > 0
+            else self.stitch_max_height
+        )
+        max_h = self.stitch_max_height
+
         os.makedirs(work_dir, exist_ok=True)
         result: List[str] = []
         start_idx = 0
 
         if self.stitch_keep_first and len(image_files) >= 1:
-            
-            first_out = os.path.join(work_dir, "strip_000_cover" + os.path.splitext(image_files[0])[1])
+            first_out = os.path.join(
+                work_dir, "strip_000_cover" + os.path.splitext(image_files[0])[1]
+            )
             if not os.path.isfile(first_out):
                 shutil.copy2(image_files[0], first_out)
             result.append(first_out)
@@ -2650,102 +2714,104 @@ html, body { background: #0a0a0b; }
                 return result
 
         
+        raw_pages: List[np.ndarray] = []
         widths = []
         for f in image_files[start_idx:]:
             im = cv2.imread(f)
-            if im is not None:
-                widths.append(im.shape[1])
-        if not widths:
+            if im is None:
+                print(f"    [!] خواندن نشد، رد شد: {os.path.basename(f)}")
+                continue
+            widths.append(im.shape[1])
+            raw_pages.append(im)
+        if not raw_pages:
             return image_files
         widths.sort()
         target_w = widths[len(widths) // 2]
 
-        strip_imgs: List[np.ndarray] = []
-        strip_h = 0
-        strip_i = 0
-
-        def flush_strip():
-            nonlocal strip_imgs, strip_h, strip_i
-            if not strip_imgs:
-                return
-            merged = np.vstack(strip_imgs)
-            out_path = os.path.join(work_dir, f"strip_{strip_i + 1:03d}.jpg")
-            self._write_image(merged, out_path)
-            result.append(out_path)
-            print(f"    [+] نوار {strip_i + 1}: ارتفاع {merged.shape[0]}px "
-                  f"از {len(strip_imgs)} صفحه")
-            strip_i += 1
-            strip_imgs = []
-            strip_h = 0
-
-        for f in image_files[start_idx:]:
-            img = cv2.imread(f)
-            if img is None:
-                print(f"    [!] خواندن نشد، رد شد: {os.path.basename(f)}")
-                continue
-            h, w = img.shape[:2]
+        
+        normalized: List[np.ndarray] = []
+        for im in raw_pages:
+            h, w = im.shape[:2]
             if w != target_w:
                 new_h = max(1, int(round(h * (target_w / float(w)))))
-                img = cv2.resize(img, (target_w, new_h), interpolation=cv2.INTER_AREA)
-                h = new_h
+                im = cv2.resize(im, (target_w, new_h), interpolation=cv2.INTER_AREA)
+            normalized.append(im)
 
-            
-            if h > self.stitch_max_height:
-                flush_strip()
-                out_path = os.path.join(work_dir, f"strip_{strip_i + 1:03d}.jpg")
-                self._write_image(img, out_path)
-                result.append(out_path)
-                print(f"    [+] نوار {strip_i + 1}: صفحهٔ بلند تکی ({h}px)")
-                strip_i += 1
-                continue
+        strip_i = 0
+        short_count = 0
+        tall_count = 0
 
-            if strip_h + h > self.stitch_max_height and strip_imgs:
-                flush_strip()
+        def emit_image(img: np.ndarray, label: str) -> None:
+            nonlocal strip_i
+            out_path = os.path.join(work_dir, f"strip_{strip_i + 1:03d}.jpg")
+            self._write_image(img, out_path)
+            result.append(out_path)
+            print(f"    [+] نوار {strip_i + 1}: {label} ({img.shape[0]}px)")
+            strip_i += 1
 
-            strip_imgs.append(img)
-            strip_h += h
+        def split_and_emit(long_img: np.ndarray, n_pages: int) -> None:
+            total_h = long_img.shape[0]
+            if total_h <= max_h:
+                emit_image(
+                    long_img,
+                    f"نوار چسبیده ({n_pages} صفحه، تمام {total_h}px)",
+                )
+                return
+            y = 0
+            part = 0
+            while y < total_h:
+                y2 = min(y + max_h, total_h)
+                if 0 < (total_h - y2) < int(max_h * 0.15):
+                    y2 = total_h
+                chunk = long_img[y:y2]
+                part += 1
+                emit_image(
+                    chunk,
+                    f"تکه {part} از نوار ({n_pages} صفحه، برش {y}:{y2})",
+                )
+                y = y2
 
-        flush_strip()
+        buffer: List[np.ndarray] = []
 
-        print(f"[*] چسباندن صفحات: {len(image_files)} صفحه → {len(result)} نوار "
-              f"(سقف ارتفاع={self.stitch_max_height}px"
-              f"{'، صفحهٔ اول جدا' if self.stitch_keep_first else ''})")
+        def flush_buffer() -> None:
+            nonlocal buffer, short_count
+            if not buffer:
+                return
+            n = len(buffer)
+            short_count += n
+            merged = np.vstack(buffer)
+            print(
+                f"    [*] چسباندن {n} صفحهٔ کوتاه → نوار {merged.shape[0]}px "
+                f"سپس برش تا سقف {max_h}px"
+            )
+            split_and_emit(merged, n)
+            buffer = []
+
+        for img in normalized:
+            h = img.shape[0]
+            if h >= short_max:
+                flush_buffer()
+                if h > max_h:
+                    print(f"    [*] صفحهٔ بلند {h}px → برش به سقف {max_h}px")
+                    split_and_emit(img, 1)
+                else:
+                    emit_image(img, f"صفحهٔ بلند تکی (≥{short_max}px)")
+                tall_count += 1
+            else:
+                buffer.append(img)
+
+        flush_buffer()
+
+        print(
+            f"[*] چسباندن صفحات: {len(image_files)} صفحه → {len(result)} نوار "
+            f"(کوتاه<{short_max}px={short_count} | بلند={tall_count} | "
+            f"سقف برش={max_h}px"
+            f"{'، صفحهٔ اول جدا' if self.stitch_keep_first else ''})"
+        )
         return result if result else image_files
 
     def run(self, input_path: str, output_path: str, resume: bool = True,
             clean_old: bool = True) -> None:
-        if ("," in input_path) or ("*" in input_path) or self._is_url(input_path):
-            urls = self._expand_input_urls(input_path) if ("," in input_path or "*" in input_path) else [input_path]
-
-            if not urls:
-                print("[!] هیچ لینک معتبری پیدا نشد.", file=sys.stderr)
-                return
-
-            if len(urls) > 1:
-                print(f"[*] {len(urls)} فصل پیدا شد. هر فصل جداگانه پردازش می‌شه...")
-                for i, url in enumerate(urls, 1):
-                    print(f"\n{'='*60}")
-                    print(f"[فصل {i}/{len(urls)}] {url}")
-                    print(f"{'='*60}")
-
-                    chapter_out = self._auto_output_path(url, output_path)
-                    out_ext = os.path.splitext(output_path)[1].lower()
-                    if out_ext in (".pdf", ".zip", ".html") or not out_ext:
-                        base_name = self._auto_output_path(url, ".tmp")
-                        base_name = os.path.splitext(base_name)[0]
-                        if out_ext:
-                            chapter_out = os.path.join(
-                                os.path.dirname(output_path) or ".",
-                                base_name + out_ext
-                            )
-                        else:
-                            chapter_out = os.path.join(output_path, base_name)
-
-                    self.run(url, chapter_out, resume=resume, clean_old=False)
-                return
-
-            input_path = urls[0]
-
         if clean_old:
             self._cleanup_previous_artifacts(output_path, keep_outputs=False)
 
@@ -2766,9 +2832,31 @@ html, body { background: #0a0a0b; }
             print(f"[*] عنوان سری (فقط صفحه ۱): {', '.join(title_skips[:8])}"
                   + ("…" if len(title_skips) > 8 else ""))
 
-        if self._is_url(input_path):
-            print(f"[*] دانلود تصاویر از لینک: {input_path}")
-            image_files = self._download_images_from_url(input_path, src_dir)
+        if self._is_url(input_path) or "," in input_path or "*" in input_path:
+            urls = self._expand_input_urls(input_path)
+
+            if not urls:
+                print("[!] هیچ لینک معتبری پیدا نشد.", file=sys.stderr)
+                return
+
+            if len(urls) == 1:
+                print(f"[*] دانلود تصاویر از لینک: {urls[0]}")
+                image_files = self._download_images_from_url(urls[0], src_dir)
+            else:
+                print(f"[*] {len(urls)} فصل پیدا شد. هر فصل جداگانه پردازش می‌شه...")
+                out_ext = os.path.splitext(output_path)[1].lower()
+                chapter_ext = out_ext if out_ext in (".pdf", ".zip", ".html") else ".pdf"
+                for i, url in enumerate(urls, 1):
+                    print(f"\n{'='*60}")
+                    print(f"[فصل {i}/{len(urls)}] {url}")
+                    print(f"{'='*60}")
+                    chapter_out = self._auto_output_path(url, chapter_ext)
+                    if not os.path.splitext(chapter_out)[1]:
+                        parent = (output_path if not out_ext else (os.path.dirname(output_path) or "."))
+                        chapter_out = os.path.join(parent, os.path.basename(chapter_out.rstrip("/\\")) + chapter_ext)
+
+                    self.run(url, chapter_out, resume=resume, clean_old=False)
+                return
         elif input_path.lower().endswith(".zip"):
             print(f"[*] استخراج فایل zip: {input_path}")
             image_files = self._extract_zip(input_path, src_dir)
@@ -2791,7 +2879,7 @@ html, body { background: #0a0a0b; }
             return
 
         
-        if self.stitch_max_height > 0 and len(image_files) > 2:
+        if self.stitch_max_height > 0 and len(image_files) > 1:
             stitch_dir = os.path.join(cache_dir, "stitched")
             image_files = self._stitch_pages_for_efficiency(image_files, stitch_dir)
 
@@ -2864,12 +2952,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="مترجم خودکار مانگا/مانهوا به فارسی — پشتیبانی از Gemini / OpenAI / DeepSeek / Groq / xAI / Ollama و ..."
     )
-    p.add_argument(
-        "-i", "--input", required=True,
-        help="ورودی: پوشه/تصویر/zip/pdf یا لینک فصل. "
-             "چند لینک با کاما جدا کن، یا از * استفاده کن "
-             "(مثال: .../chapter-*-eng-li/ برای همهٔ فصل‌ها)"
-    )
+    p.add_argument("-i", "--input", required=True)
     p.add_argument("-o", "--output", required=True,
                    help="مسیر خروجی: پوشه، فایل کامل، یا فقط پسوند (.pdf / .zip / .html)")
     p.add_argument(
@@ -2897,8 +2980,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-chunk-height", type=int, default=3600,
                    help="حداکثر ارتفاع هر تکه OCR داخل یک تصویر (پیکسل)")
     p.add_argument("--stitch-max-height", type=int, default=16000,
-                   help="صفحات کوتاه را به نوارهایی تا این ارتفاع بچسبان "
-                        "(۰ = خاموش). برای فصل‌های ۱۰۰+ صفحهٔ کوتاه مصرف API را کم می‌کند.")
+                   help="سقف ارتفاع هر نوار چسبانده‌شده (پیش‌فرض ۱۶۰۰۰). ۰ = خاموش.")
+    p.add_argument("--stitch-short-threshold", type=int, default=6000,
+                   help="صفحاتی کوتاه‌تر از این ارتفاع (پیش‌فرض ۶۰۰۰px) با هم چسبانده "
+                        "می‌شوند تا به سقف --stitch-max-height برسند. "
+                        "صفحات بلندتر جدا می‌مانند.")
     p.add_argument("--no-stitch-keep-first", action="store_true",
                    help="صفحهٔ اول را هم داخل نوارها بگذار (پیش‌فرض: صفحهٔ اول جدا می‌ماند)")
     p.add_argument("--img-format", choices=["webp", "png", "jpg"], default="jpg")
@@ -2954,12 +3040,9 @@ def main():
         )
         sys.exit(1)
 
-    if "," in args.input or "*" in args.input:
-        output_path = args.output
-    else:
-        output_path = MangaTranslator._auto_output_path(args.input, args.output)
-        if output_path != args.output:
-            print(f"[*] نام خروجی خودکار: {output_path}")
+    output_path = MangaTranslator._auto_output_path(args.input, args.output)
+    if output_path != args.output:
+        print(f"[*] نام خروجی خودکار: {output_path}")
 
     translator = MangaTranslator(
         api_key=unique_keys or ["ollama"],
@@ -2985,6 +3068,7 @@ def main():
         translation_temperature=args.temperature,
         max_output_width=(args.max_width or None),
         stitch_max_height=args.stitch_max_height,
+        stitch_short_threshold=args.stitch_short_threshold,
         stitch_keep_first=not args.no_stitch_keep_first,
     )
     translator.run(
