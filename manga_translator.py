@@ -2057,6 +2057,7 @@ class MangaTranslator:
                 seen.add(u)
                 unique.append(u)
         return unique
+
     @staticmethod
     def _normalize_image_url(url: str) -> str:
         if "github.com/" in url and "/blob/" in url:
@@ -2713,6 +2714,38 @@ html, body { background: #0a0a0b; }
 
     def run(self, input_path: str, output_path: str, resume: bool = True,
             clean_old: bool = True) -> None:
+        if ("," in input_path) or ("*" in input_path) or self._is_url(input_path):
+            urls = self._expand_input_urls(input_path) if ("," in input_path or "*" in input_path) else [input_path]
+
+            if not urls:
+                print("[!] هیچ لینک معتبری پیدا نشد.", file=sys.stderr)
+                return
+
+            if len(urls) > 1:
+                print(f"[*] {len(urls)} فصل پیدا شد. هر فصل جداگانه پردازش می‌شه...")
+                for i, url in enumerate(urls, 1):
+                    print(f"\n{'='*60}")
+                    print(f"[فصل {i}/{len(urls)}] {url}")
+                    print(f"{'='*60}")
+
+                    chapter_out = self._auto_output_path(url, output_path)
+                    out_ext = os.path.splitext(output_path)[1].lower()
+                    if out_ext in (".pdf", ".zip", ".html") or not out_ext:
+                        base_name = self._auto_output_path(url, ".tmp")
+                        base_name = os.path.splitext(base_name)[0]
+                        if out_ext:
+                            chapter_out = os.path.join(
+                                os.path.dirname(output_path) or ".",
+                                base_name + out_ext
+                            )
+                        else:
+                            chapter_out = os.path.join(output_path, base_name)
+
+                    self.run(url, chapter_out, resume=resume, clean_old=False)
+                return
+
+            input_path = urls[0]
+
         if clean_old:
             self._cleanup_previous_artifacts(output_path, keep_outputs=False)
 
@@ -2736,28 +2769,6 @@ html, body { background: #0a0a0b; }
         if self._is_url(input_path):
             print(f"[*] دانلود تصاویر از لینک: {input_path}")
             image_files = self._download_images_from_url(input_path, src_dir)
-        if self._is_url(input_path) or "," in input_path or "*" in input_path:
-            urls = self._expand_input_urls(input_path)
-
-            if not urls:
-                print("[!] هیچ لینک معتبری پیدا نشد.", file=sys.stderr)
-                return
-
-            if len(urls) == 1:
-                print(f"[*] دانلود تصاویر از لینک: {urls[0]}")
-                image_files = self._download_images_from_url(urls[0], src_dir)
-            else:
-                print(f"[*] {len(urls)} فصل پیدا شد. هر فصل جداگانه پردازش می‌شه...")
-                for i, url in enumerate(urls, 1):
-                    print(f"\n{'='*60}")
-                    print(f"[فصل {i}/{len(urls)}] {url}")
-                    print(f"{'='*60}")
-                    chapter_out = self._auto_output_path(url, output_path)
-                    if not os.path.splitext(chapter_out)[1]:
-                        chapter_out = os.path.join(output_path, os.path.basename(chapter_out.rstrip("/\\")))
-
-                    self.run(url, chapter_out, resume=resume, clean_old=False)
-                return
         elif input_path.lower().endswith(".zip"):
             print(f"[*] استخراج فایل zip: {input_path}")
             image_files = self._extract_zip(input_path, src_dir)
@@ -2853,7 +2864,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="مترجم خودکار مانگا/مانهوا به فارسی — پشتیبانی از Gemini / OpenAI / DeepSeek / Groq / xAI / Ollama و ..."
     )
-    p.add_argument("-i", "--input", required=True)
+    p.add_argument(
+        "-i", "--input", required=True,
+        help="ورودی: پوشه/تصویر/zip/pdf یا لینک فصل. "
+             "چند لینک با کاما جدا کن، یا از * استفاده کن "
+             "(مثال: .../chapter-*-eng-li/ برای همهٔ فصل‌ها)"
+    )
     p.add_argument("-o", "--output", required=True,
                    help="مسیر خروجی: پوشه، فایل کامل، یا فقط پسوند (.pdf / .zip / .html)")
     p.add_argument(
@@ -2938,9 +2954,12 @@ def main():
         )
         sys.exit(1)
 
-    output_path = MangaTranslator._auto_output_path(args.input, args.output)
-    if output_path != args.output:
-        print(f"[*] نام خروجی خودکار: {output_path}")
+    if "," in args.input or "*" in args.input:
+        output_path = args.output
+    else:
+        output_path = MangaTranslator._auto_output_path(args.input, args.output)
+        if output_path != args.output:
+            print(f"[*] نام خروجی خودکار: {output_path}")
 
     translator = MangaTranslator(
         api_key=unique_keys or ["ollama"],
