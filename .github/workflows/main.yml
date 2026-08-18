@@ -164,10 +164,13 @@ jobs:
           echo "RESULT_STEM=$STEM" >> $GITHUB_ENV
           echo "خروجی نهایی: $RESULT"
 
-      - name: Upload result
+      - name: Upload all results
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.RESULT_STEM }}
-          path: ${{ env.RESULT_FILE }}
+          path: |
+            *.pdf
+            *.html
+            *.zip
           retention-days: 7
           if-no-files-found: error
