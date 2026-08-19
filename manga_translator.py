@@ -529,14 +529,14 @@ class MangaTranslator:
         ocr_kwargs = dict(
             lang=main_lang,
             show_log=False,
-            text_det_thresh=0.3,
-            text_det_box_thresh=0.5,
-            text_det_unclip_ratio=1.6,
-            det_db_thresh=0.3,
-            det_db_box_thresh=0.5,
-            det_db_unclip_ratio=1.6,
+            text_det_thresh=0.25,          
+            text_det_box_thresh=0.4,
+            text_det_unclip_ratio=1.8,
+            det_db_thresh=0.25,
+            det_db_box_thresh=0.4,
+            det_db_unclip_ratio=1.8,
             max_batch_size=1,
-            use_dilation=False,
+            use_dilation=True,             
         )
 
         try:
@@ -964,33 +964,76 @@ class MangaTranslator:
             "damn", "shit", "fuck", "hell", "god", "please", "sorry",
             "thanks", "thank", "bye", "later", "never", "always", "maybe",
             "huh", "nah", "yep", "yup", "nope", "yea", "yeah", "yup",
+            "one", "two", "all", "any", "out", "off", "up", "down", "in",
+            "on", "at", "to", "of", "for", "and", "but", "or", "so",
+            "the", "a", "an", "this", "that", "it", "its", "his", "her",
+            "our", "your", "their", "us", "them", "him", "do",
+            "did", "does", "is", "are", "was", "were", "be", "been",
+            "have", "has", "had", "will", "would", "can", "could",
+            "should", "must", "may", "might", "let", "get", "got",
+            "see", "saw", "know", "knew", "think", "say", "said",
+            "tell", "told", "ask", "asked", "came", "went",
+            "id", "sir", "boss", "man", "boy", "girl", "kid", "guys",
+            "hey!", "what!", "huh!", "no!!", "yes!!", "stop!!", "wait!!",
+            "die!", "die!!", "run!", "run!!", "help!", "help!!",
+            
+            "much", "rich", "gold", "hard", "find", "gone", "took", "last",
+            "tiny", "piece", "way", "need", "want", "money", "carry", "dream",
+            "found", "single", "league", "hand", "look", "part",
+            "tokyo", "hokkaido", "meiji", "nuggets", "flakes", "prospectors",
         }
-        
+
         core = re.sub(r"[!?.…~\-]+$", "", low_full).strip()
+
+        
+        
+        _lonely_func = {
+            "of", "to", "in", "on", "at", "a", "an", "the", "is", "it", "as",
+            "or", "so", "be", "do", "if", "by",
+        }
+        if len(stripped) <= 3 and core in _lonely_func and not any(c in stripped for c in "!?…"):
+            return "junk"
+
         if core in dialogue_short or low_full in dialogue_short:
             return "dialogue"
         if alpha_only.lower() in dialogue_short:
             return "dialogue"
-        
+
         if stripped.upper() == "I":
             return "dialogue"
 
         digits_only = re.sub(r"[^\d]", "", stripped)
-        
+
         is_progress = bool(re.fullmatch(
             r"[\(\[\{]?\s*\d+\s*/\s*\d+\s*[\)\]\}]?",
             stripped,
         ))
         if is_progress:
             return "dialogue"
+
+        
+        
+        if (
+            re.search(r"\d+\s*화", stripped)
+            or re.search(r"(?i)\b(?:ch(?:apter)?|ep(?:isode)?)\s*\.?\s*\d+", stripped)
+            or re.search(r"(?i)^\d+\s*(?:화|wolat|etdt|chapter|episode)\b", stripped)
+            or re.search(r"(?i)\b\d{1,3}\s*화\b", stripped)
+            or (re.search(r"(?i)wolat|etdt", stripped) and re.search(r"\d", stripped))
+        ):
+            return "promo"
+
+        
         if stripped.isdigit() or re.fullmatch(r"[\d\s.%oO]+", stripped):
             return "junk"
-        
+        if re.fullmatch(r"[QOIl]?\d{2,}", stripped, re.I):  
+            return "junk"
+        if re.fullmatch(r"[A-Za-z]{0,2}\d{3,}", stripped) and len(digits_only) >= 3:
+            return "junk"
+
         if re.fullmatch(r"[A-Za-z]?\d{2,6}", stripped) and len(stripped) <= 7:
             return "sfx"
         if digits_only and len(stripped) <= 12:
-            non_digit_alpha = re.sub(r"[\d\s.%oO]", "", stripped)
-            
+            non_digit_alpha = re.sub(r"[\d\s.%oOQIl]", "", stripped, flags=re.I)
             non_digit_alpha = re.sub(r"[/()\[\]{}]", "", non_digit_alpha)
             if len(non_digit_alpha) <= 2:
                 return "junk"
@@ -1034,29 +1077,58 @@ class MangaTranslator:
         ):
             return "promo"
 
-        if len(words) >= 2 or len(stripped) > 8:
+        
+        if len(words) >= 2 or len(stripped) > 10:
             return "dialogue"
 
         hangul_chars = HANGUL_RE.findall(stripped)
         hangul_len = sum(len(h) for h in hangul_chars)
-        if hangul_len >= 1 and hangul_len == len(alpha_only) and len(stripped) <= 6:
+        if hangul_len >= 1 and hangul_len == len(alpha_only) and len(stripped) <= 8:
             return "sfx"
 
         
-        if len(stripped) <= 8 and SFX_WORD_RE.match(stripped):
-            
+        if len(stripped) <= 12 and SFX_WORD_RE.match(stripped):
             if core not in dialogue_short and alpha_only.lower() not in dialogue_short:
                 return "sfx"
 
+        
+        
+        
         if (
-            2 <= len(stripped) <= 6
+            3 <= len(stripped) <= 12
             and stripped.isupper()
             and " " not in stripped
             and stripped.isalpha()
         ):
             upper_dialogue = {w.upper() for w in dialogue_short if w.isalpha()}
-            if stripped not in upper_dialogue:
+            if stripped in upper_dialogue:
+                return "dialogue"
+
+            
+            
+            has_strong_repeat = bool(re.search(r"(.)\1{2,}", stripped))
+            vowel_count = sum(1 for c in stripped if c in "AEIOU")
+            consonant_run = bool(re.search(r"[BCDFGHJKLMNPQRSTVWXYZ]{3,}", stripped))
+            ends_with_impact = any(
+                stripped.endswith(suf)
+                for suf in (
+                    "AC", "ACK", "AK", "UM", "OOM", "ANG", "ONG",
+                    "ASH", "ISH", "USH", "AMM", "ANN", "ING",
+                )
+            )
+            looks_invented = (
+                has_strong_repeat
+                or consonant_run
+                or ends_with_impact
+                
+                or (vowel_count == 0 and len(stripped) >= 3)
+            )
+
+            if looks_invented:
                 return "sfx"
+
+            
+            return "dialogue"
 
         if len(alpha_only) <= 2 and len(stripped) <= 4 and stripped.upper() != "I":
             return "junk"
@@ -1142,48 +1214,43 @@ class MangaTranslator:
             return vgap, hgap, avg_h, h_overlap_min, h_overlap_max, abs(cx1 - cx2), max(h1, h2), min(h1, h2), min(w1, w2)
 
         def likely_same_bubble(r1, r2, consecutive: bool = False):
-            
             vgap, hgap, avg_h, h_ov_min, h_ov_max, cx_dist, h_max, h_min, w_min = pair_metrics(r1, r2)
+
             
-            
-            height_ratio_limit = 3.2 if consecutive else 2.5
-            if h_max > h_min * height_ratio_limit:
+            if h_max > h_min * 3.5:
                 return False
 
             
-            if cx_dist > max(w_min * 0.70, 55):
-                if h_ov_max < 0.28:
-                    return False
-
-            
-            abs_max_vgap = max(55.0, avg_h * 1.55)
-            if consecutive:
-                
-                abs_max_vgap = max(48.0, avg_h * 1.35)
-
-            if -avg_h * 0.45 <= vgap <= abs_max_vgap:
-                
-                if h_ov_min >= 0.22 and h_ov_max >= 0.15:
+            margin = max(4, int(avg_h * 0.12))
+            if expanded_overlap(r1, r2, margin=margin):
+                if h_ov_max >= 0.08 or cx_dist <= max(w_min * 0.9, 70):
                     return True
-                
-                if cx_dist <= max(w_min * 0.55, 45) and h_ov_min >= 0.12:
-                    return True
-                
-                
-                if consecutive and vgap <= max(32.0, avg_h * 0.95):
-                    if cx_dist > max(w_min * 0.90, 95) and h_ov_max < 0.22:
-                        return False
-                    if cx_dist <= max(w_min * 0.65, 65) or h_ov_max >= 0.20:
-                        return True
 
-            
-            if hgap <= max(self.group_margin * 2.2, avg_h * 0.55, 15):
-                if abs((r1[1] + r1[3] / 2) - (r2[1] + r2[3] / 2)) <= avg_h * 0.55:
-                    return True
             return False
 
-        def kinds_compatible(i, j):
+        def _boxes_near(r1, r2, margin: int = 20) -> bool:
             
+            return expanded_overlap(r1, r2, margin=margin)
+
+        
+        
+        
+        
+        for i in range(n):
+            ki = detections[i].get("kind", "dialogue")
+            if ki not in ("sfx", "promo"):
+                continue
+            for j in range(n):
+                if i == j:
+                    continue
+                if detections[j].get("kind", "dialogue") != "dialogue":
+                    continue
+                near_margin = max(18, int(min(rects[i][3], rects[j][3]) * 0.65))
+                if _boxes_near(rects[i], rects[j], margin=near_margin):
+                    detections[i]["kind"] = "dialogue"
+                    break
+
+        def kinds_compatible(i, j):
             ki = detections[i].get("kind", "dialogue")
             kj = detections[j].get("kind", "dialogue")
             if ki == kj:
@@ -1191,56 +1258,39 @@ class MangaTranslator:
             
             if ki == "junk" or kj == "junk":
                 return False
-            
-            if ki == "promo" or kj == "promo":
-                return False
-            
-            if ki == "sfx" or kj == "sfx":
-                return False
-            return True
 
-        merge_margin = max(self.group_margin, 12)
+            t1 = (detections[i].get("text") or "").strip()
+            t2 = (detections[j].get("text") or "").strip()
+
+            def mostly_digits(t: str) -> bool:
+                if not t:
+                    return False
+                digits = sum(1 for c in t if c.isdigit() or c in "OoQlI")
+                return digits >= max(3, int(len(t) * 0.6))
+
+            if mostly_digits(t1) or mostly_digits(t2):
+                return False
+
+            
+            if {ki, kj} <= {"sfx", "dialogue", "promo"}:
+                if "dialogue" in (ki, kj):
+                    near_margin = max(14, int(min(rects[i][3], rects[j][3]) * 0.55))
+                    if _boxes_near(rects[i], rects[j], margin=near_margin):
+                        return True
+                if ki == "sfx" and kj == "sfx":
+                    return True
+            return False
+
+        
+        
+        merge_margin = max(self.group_margin, 6)
         for i in range(n):
             for j in range(i + 1, n):
                 if not kinds_compatible(i, j):
                     continue
-                if expanded_overlap(rects[i], rects[j], merge_margin) and likely_same_bubble(rects[i], rects[j]):
-                    union(i, j)
-
-        
-        
-        order = sorted(range(n), key=lambda i: (rects[i][1] + rects[i][3] / 2.0, rects[i][0]))
-        for a in range(len(order) - 1):
-            i, j = order[a], order[a + 1]
-            if not kinds_compatible(i, j):
-                continue
-            vgap, hgap, avg_h, h_ov_min, h_ov_max, cx_dist, h_max, h_min, w_min = pair_metrics(rects[i], rects[j])
-            
-            if vgap <= max(38.0, avg_h * 1.15) and likely_same_bubble(rects[i], rects[j], consecutive=True):
-                union(i, j)
-            
-            
-            elif vgap <= max(26.0, avg_h * 0.85) and cx_dist <= max(w_min * 0.55, 48):
-                if h_max <= h_min * 2.8 and h_ov_max >= 0.22:
-                    union(i, j)
-
-        
-        
-        for i in range(n):
-            for j in range(i + 1, n):
-                if find(i) == find(j):
-                    continue
-                if not kinds_compatible(i, j):
-                    continue
-                vgap, hgap, avg_h, h_ov_min, h_ov_max, cx_dist, h_max, h_min, w_min = pair_metrics(rects[i], rects[j])
                 
-                if vgap < -avg_h * 0.2 or vgap > max(28.0, avg_h * 0.95):
-                    continue
-                if h_max > h_min * 4.0:
-                    continue
-                
-                if h_ov_max >= 0.18 or cx_dist <= max(w_min * 0.75, 65):
-                    if h_ov_min >= 0.12 or cx_dist <= max(w_min * 0.55, 50):
+                if expanded_overlap(rects[i], rects[j], merge_margin):
+                    if likely_same_bubble(rects[i], rects[j]):
                         union(i, j)
 
         groups = {}
@@ -1294,6 +1344,24 @@ class MangaTranslator:
                     kind=region_kind,
                 )
             )
+
+        
+        
+        
+        for i, ri in enumerate(regions):
+            if ri.kind not in ("sfx", "promo"):
+                continue
+            for j, rj in enumerate(regions):
+                if i == j or rj.kind != "dialogue":
+                    continue
+                x1, y1, w1, h1 = ri.rect
+                x2, y2, w2, h2 = rj.rect
+                margin = max(18, int(min(h1, h2) * 0.65))
+                a = (x1 - margin, y1 - margin, x1 + w1 + margin, y1 + h1 + margin)
+                b = (x2 - margin, y2 - margin, x2 + w2 + margin, y2 + h2 + margin)
+                if not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1]):
+                    ri.kind = "dialogue"
+                    break
 
         return regions
 
@@ -1408,33 +1476,22 @@ class MangaTranslator:
                     if k1 != k2:
                         continue
                 vgap, avg_h, h_ov, h_ov_max, cx_dist, h_max, h_min, w_min = metrics(regions[i], regions[j])
+
                 
-                if vgap < -avg_h * 0.3 or vgap > max(max_vgap, avg_h * 0.85):
+                x1, y1, w1, h1 = regions[i].rect
+                x2, y2, w2, h2 = regions[j].rect
+                margin = max(4, int(avg_h * 0.12))
+                a = (x1 - margin, y1 - margin, x1 + w1 + margin, y1 + h1 + margin)
+                b = (x2 - margin, y2 - margin, x2 + w2 + margin, y2 + h2 + margin)
+                boxes_hit = not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
+
+                if not boxes_hit:
                     continue
-                if h_max > h_min * 4.5:
-                    continue
-                h1 = regions[i].rect[3]
-                h2 = regions[j].rect[3]
-                w1 = regions[i].rect[2]
-                w2 = regions[j].rect[2]
-                both_substantial = (h1 > avg_h * 2.2 and h2 > avg_h * 2.2) or (h1 > 90 and h2 > 90)
-                if both_substantial and vgap > 12:
+                if h_max > h_min * 3.5:
                     continue
                 
-                area1 = w1 * h1
-                area2 = w2 * h2
-                small_area, large_area = min(area1, area2), max(area1, area2)
-                if large_area > 0 and small_area < large_area * 0.40:
-                    
-                    if cx_dist > max(w_min * 0.35, 28):
-                        continue
-                
-                if h_ov >= 0.30 and cx_dist <= max(w_min * 0.55, 45):
+                if h_ov >= 0.08 or cx_dist <= max(w_min * 0.9, 70):
                     union(i, j)
-                elif (h1 < 55 or h2 < 55) and vgap <= 20:
-                    
-                    if cx_dist <= max(w_min * 0.45, 35) and h_ov >= 0.15:
-                        union(i, j)
 
         groups = {}
         for i in range(n):
@@ -1801,6 +1858,9 @@ class MangaTranslator:
             t = re.sub(pat, rep, t, flags=re.IGNORECASE)
         
         t = re.sub(r"([A-Za-z])[:;|]([A-Za-z])", r"\1\2", t)
+        
+        t = re.sub(r"\s*[QOIl]?\d{3,}\s*$", "", t, flags=re.I).strip()
+        t = re.sub(r"\s+\d{3,}\s*$", "", t).strip()
         return t.strip()
 
     def translate_regions(self, regions: List[TextRegion]) -> None:
@@ -2125,34 +2185,64 @@ class MangaTranslator:
         print(f"    [>] OCR تیکه‌ی {idx + 1} (ردیف {y0} تا {y1})")
         piece = image[y0:y1, :]
 
-        detections = self.detect_text(piece)
+        h_p, w_p = piece.shape[:2]
+
+        
+        scale = float(getattr(self, "mag_ratio", 1.35) or 1.35)
+
+        
+        if max(h_p, w_p) < 2200:
+            scale = max(scale, 1.8)
+        if max(h_p, w_p) < 1600:
+            scale = max(scale, 2.2)
+
+        if scale > 1.01:
+            piece_up = cv2.resize(piece, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        else:
+            piece_up = piece
+            scale = 1.0
+
+        detections = self.detect_text(piece_up)
 
         if self.two_pass_ocr:
-            enhanced = self._clahe_enhance(piece)
+            
+            enhanced = self._clahe_enhance(piece_up)
             detections += self.detect_text(enhanced)
-            inverted = cv2.bitwise_not(piece)
+
+            
+            inverted = cv2.bitwise_not(piece_up)
             detections += self.detect_text(inverted)
-            gray = cv2.cvtColor(piece, cv2.COLOR_BGR2GRAY)
+
+            
+            gray = cv2.cvtColor(piece_up, cv2.COLOR_BGR2GRAY)
             _, bw = cv2.threshold(gray, 160, 255, cv2.THRESH_BINARY)
             if float(np.mean(bw)) < 127:
                 bw = cv2.bitwise_not(bw)
             bw = cv2.dilate(bw, np.ones((2, 2), np.uint8), iterations=1)
             bw_bgr = cv2.cvtColor(bw, cv2.COLOR_GRAY2BGR)
             detections += self.detect_text(bw_bgr)
+
             
-            try:
-                h_p, w_p = piece.shape[:2]
-                if max(h_p, w_p) < 3200:
-                    scale = 1.5
-                    up_inv = cv2.resize(inverted, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+            if scale < 2.0 and max(h_p, w_p) < 2800:
+                try:
+                    extra_scale = 2.0 / scale
+                    up_inv = cv2.resize(
+                        inverted, None, fx=extra_scale, fy=extra_scale,
+                        interpolation=cv2.INTER_CUBIC
+                    )
                     up_inv_dets = self.detect_text(up_inv)
                     for d in up_inv_dets:
-                        d["poly"] = (d["poly"].astype(np.float32) / scale).astype(np.int32)
+                        d["poly"] = (d["poly"].astype(np.float32) / extra_scale).astype(np.int32)
                     detections += up_inv_dets
-            except Exception:
-                pass
-            detections = self._dedupe_detections(detections)
+                except Exception:
+                    pass
 
+        
+        if scale != 1.0:
+            for d in detections:
+                d["poly"] = (d["poly"].astype(np.float32) / scale).astype(np.int32)
+
+        detections = self._dedupe_detections(detections)
         return self.group_into_regions(detections, y_offset=y0)
 
 
