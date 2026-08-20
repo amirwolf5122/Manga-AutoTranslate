@@ -1106,28 +1106,59 @@ class MangaTranslator:
 
             
             
+            _common_upper = {
+                "CONTROL", "EVERYTHING", "ORDERS", "ORDER", "SOMETHING",
+                "ANYTHING", "NOTHING", "SOMEONE", "ANYONE", "EVERYONE",
+                "ANYWHERE", "EVERYWHERE", "SOMEWHERE", "WHATEVER",
+                "HOWEVER", "BECAUSE", "WITHOUT", "THROUGH", "BETWEEN",
+                "ANOTHER", "ALREADY", "ALWAYS", "NEVER", "REALLY",
+                "PROBABLY", "CERTAINLY", "ABSOLUTELY", "COMPLETELY",
+                "PERFECTLY", "EXACTLY", "ACTUALLY", "SERIOUSLY",
+                "OBVIOUSLY", "FINALLY", "SUDDENLY", "QUICKLY",
+                "BEFORE", "AFTER", "UNDER", "OVER", "AGAINST",
+                "TOWARD", "TOWARDS", "INSIDE", "OUTSIDE", "AROUND",
+                "DURING", "WITHIN", "BEHIND", "BEYOND", "ACROSS",
+                "PEOPLE", "PERSON", "FRIEND", "ENEMY", "POWER",
+                "POWERS", "WORLD", "PLACE", "THING", "THINGS",
+                "RIGHT", "WRONG", "GREAT", "SMALL", "LARGE",
+                "FIRST", "LAST", "NEXT", "OTHER", "SAME",
+                "STILL", "EVEN", "JUST", "ONLY", "ALSO",
+                "ABOUT", "AGAIN", "BEING", "DOING", "GOING",
+                "COMING", "LOOKING", "THINKING", "KNOWING",
+                "WANTING", "NEEDED", "CALLED", "TURNED", "MADE",
+                "SURE", "WHEN", "WHERE", "WHICH", "WHILE",
+                "THESE", "THOSE", "THERE", "THEIR", "THEM",
+                "YOUR", "YOURS", "MINE", "OURS", "THEIRS",
+                "REPORT", "RESISTANCE", "INFORMATION", "AUDIENCE",
+                "PUPPETS", "REBELLION", "CLEANERS", "CHOKERS",
+                "FESTIVAL", "VENUE", "MICROPHONE", "RANGE",
+                "NORMAL", "LORD", "MOMENT", "EFFORT", "RULE",
+            }
+            if stripped in _common_upper:
+                return "dialogue"
+
             has_strong_repeat = bool(re.search(r"(.)\1{2,}", stripped))
             vowel_count = sum(1 for c in stripped if c in "AEIOU")
-            consonant_run = bool(re.search(r"[BCDFGHJKLMNPQRSTVWXYZ]{3,}", stripped))
+            
+            consonant_run = bool(re.search(r"[BCDFGHJKLMNPQRSTVWXYZ]{4,}", stripped))
             ends_with_impact = any(
                 stripped.endswith(suf)
                 for suf in (
                     "AC", "ACK", "AK", "UM", "OOM", "ANG", "ONG",
-                    "ASH", "ISH", "USH", "AMM", "ANN", "ING",
+                    "ASH", "ISH", "USH", "AMM", "ANN",
+                    
                 )
             )
             looks_invented = (
                 has_strong_repeat
                 or consonant_run
                 or ends_with_impact
-                
                 or (vowel_count == 0 and len(stripped) >= 3)
             )
 
             if looks_invented:
                 return "sfx"
 
-            
             return "dialogue"
 
         if len(alpha_only) <= 2 and len(stripped) <= 4 and stripped.upper() != "I":
@@ -1136,7 +1167,7 @@ class MangaTranslator:
         return "dialogue"
 
     @staticmethod
-    def _dedupe_detections(detections: List[dict], iou_thresh: float = 0.4) -> List[dict]:
+    def _dedupe_detections(detections: List[dict], iou_thresh: float = 0.28) -> List[dict]:
         def rect_of(d):
             return cv2.boundingRect(d["poly"])
 
@@ -1149,23 +1180,49 @@ class MangaTranslator:
             union = w1 * h1 + w2 * h2 - inter
             return inter / union if union > 0 else 0
 
+        def text_norm(t: str) -> str:
+            return re.sub(r"[^a-z0-9\uac00-\ud7a3]", "", (t or "").lower())
+
+        def is_near_duplicate_text(a: str, b: str) -> bool:
+            
+            na, nb = text_norm(a), text_norm(b)
+            if not na or not nb:
+                return False
+            if na == nb:
+                return True
+            shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+            
+            if len(shorter) >= 3 and shorter in longer:
+                return True
+            return False
+
         kept: List[dict] = []
         for d in detections:
             r = rect_of(d)
             dup_idx = None
             for i, k in enumerate(kept):
-                if iou(r, rect_of(k)) > iou_thresh:
+                kr = rect_of(k)
+                if iou(r, kr) > iou_thresh:
                     dup_idx = i
                     break
+                if is_near_duplicate_text(d.get("text") or "", k.get("text") or ""):
+                    cx1 = r[0] + r[2] / 2.0
+                    cy1 = r[1] + r[3] / 2.0
+                    cx2 = kr[0] + kr[2] / 2.0
+                    cy2 = kr[1] + kr[3] / 2.0
+                    if (abs(cx1 - cx2) < max(r[2], kr[2]) * 0.95 + 50
+                            and abs(cy1 - cy2) < max(r[3], kr[3]) * 1.3 + 40):
+                        dup_idx = i
+                        break
             if dup_idx is None:
                 kept.append(d)
             else:
-                
                 cur = kept[dup_idx]
-                better_conf = d["conf"] > cur["conf"] + 0.05
-                similar_conf = abs(d["conf"] - cur["conf"]) <= 0.05
+                better_conf = d["conf"] > cur["conf"] + 0.04
+                similar_conf = abs(d["conf"] - cur["conf"]) <= 0.06
                 longer = len(d.get("text") or "") > len(cur.get("text") or "")
-                if better_conf or (similar_conf and longer):
+                if (better_conf or (similar_conf and longer)
+                        or (is_near_duplicate_text(d.get("text") or "", cur.get("text") or "") and longer)):
                     kept[dup_idx] = d
         return kept
 
@@ -1233,15 +1290,12 @@ class MangaTranslator:
           t1, t2 = t2, t1
 
         vgap, hgap, avg_h, avg_w, cx_dist, h_max, h_min, w_min, w_max = pair_metrics(r1, r2)
-        short1 = (t1 or "")[:25]
-        short2 = (t2 or "")[:25]
-        if "MOMENT" in (t1 + t2).upper() or "WHERE YOU" in (t1 + t2).upper() or "OUTSIDE" in (t1 + t2).upper():
+        if self.debug:
+          short1 = (t1 or "")[:25]
+          short2 = (t2 or "")[:25]
           print(f"  [VGAP DEBUG] \"{short1}\" <-> \"{short2}\"")
           print(f"       vgap={vgap:.1f} | avg_h={avg_h:.1f} | cx_dist={cx_dist:.1f}")
-    
         if vgap > 28:
-          if "MOMENT" in (t1 + t2).upper() or "WHERE" in (t1 + t2).upper():
-            print(f"  [BLOCKED] جدا نگه داشته شد → vgap={vgap:.1f} | \"{t1[:20]}\" <-> \"{t2[:20]}\"")
           return False
     
 
@@ -1295,18 +1349,26 @@ class MangaTranslator:
         ki = detections[i].get("kind", "dialogue")
         if ki not in ("sfx", "promo", "junk"):
             continue
+        
+        t_i = (detections[i].get("text") or "").strip()
+        if ki == "sfx" and len(t_i) >= 3:
+            continue
         for j in range(n):
             if i == j:
                 continue
             if detections[j].get("kind", "dialogue") != "dialogue":
                 continue
-            
-            near_margin = max(18, int(min(rects[i][3], rects[j][3]) * 0.70))
+            near_margin = max(8, int(min(rects[i][3], rects[j][3]) * 0.30))
             x1, y1, w1, h1 = rects[i]
             x2, y2, w2, h2 = rects[j]
             a = (x1 - near_margin, y1 - near_margin, x1 + w1 + near_margin, y1 + h1 + near_margin)
             b = (x2 - near_margin, y2 - near_margin, x2 + w2 + near_margin, y2 + h2 + near_margin)
             if not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1]):
+                
+                cx1 = x1 + w1 / 2.0
+                cx2 = x2 + w2 / 2.0
+                if abs(cx1 - cx2) > max((w1 + w2) / 2.0 * 0.6, 45):
+                    continue
                 detections[i]["kind"] = "dialogue"
                 break
 
@@ -1316,8 +1378,10 @@ class MangaTranslator:
         if ki == kj:
             return True
         
-        allowed = {"sfx", "dialogue", "promo", "junk"}
-        if {ki, kj} <= allowed and ("dialogue" in (ki, kj) or "junk" in (ki, kj)):
+        pair = {ki, kj}
+        if pair == {"junk", "dialogue"}:
+            return True
+        if "junk" in pair and ("sfx" in pair or "promo" in pair):
             return True
         return False
 
@@ -1356,8 +1420,75 @@ class MangaTranslator:
         x0, y0, x1, y1 = min(xs), min(ys), max(xe), max(ye)
 
         idxs_sorted = sorted(idxs, key=lambda i: (rects[i][1], rects[i][0]))
-        text = " ".join(detections[i]["text"] for i in idxs_sorted)
-        angles = [detections[i].get("angle", 0.0) for i in idxs_sorted]
+
+        
+        def _norm_txt(t: str) -> str:
+            return re.sub(r"[^a-z0-9\uac00-\ud7a3]", "", (t or "").lower())
+
+        def _is_strict_partial(a: str, b: str) -> bool:
+            
+            na, nb = _norm_txt(a), _norm_txt(b)
+            if not na or not nb:
+                return False
+            if na == nb:
+                return True
+            shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+            return len(shorter) >= 3 and shorter in longer
+
+        kept_idxs: List[int] = []
+        for i in idxs_sorted:
+            t_i = (detections[i].get("text") or "").strip()
+            if not t_i:
+                continue
+            r_i = rects[i]
+            is_dup = False
+            for k, j in enumerate(kept_idxs):
+                t_j = (detections[j].get("text") or "").strip()
+                r_j = rects[j]
+                cy_i = r_i[1] + r_i[3] / 2.0
+                cy_j = r_j[1] + r_j[3] / 2.0
+                avg_h = max(1.0, (r_i[3] + r_j[3]) / 2.0)
+                same_line = abs(cy_i - cy_j) < avg_h * 0.65
+                if same_line and _is_strict_partial(t_i, t_j):
+                    conf_i = float(detections[i].get("conf") or 0)
+                    conf_j = float(detections[j].get("conf") or 0)
+                    if len(t_i) > len(t_j) or (len(t_i) == len(t_j) and conf_i > conf_j):
+                        kept_idxs[k] = i
+                    is_dup = True
+                    break
+            if not is_dup:
+                kept_idxs.append(i)
+
+        
+        if len(kept_idxs) > 1:
+            long_norms = []
+            short_idxs = []
+            for i in kept_idxs:
+                t = (detections[i].get("text") or "").strip()
+                n = _norm_txt(t)
+                if len(t) >= 10 or len(n) >= 8:
+                    long_norms.append(n)
+                else:
+                    short_idxs.append(i)
+            if long_norms and short_idxs:
+                combined = "".join(long_norms)
+                final = [i for i in kept_idxs if i not in short_idxs]
+                for i in short_idxs:
+                    n = _norm_txt(detections[i].get("text") or "")
+                    if not n or n not in combined:
+                        final.append(i)
+                kept_idxs = sorted(final, key=lambda i: (rects[i][1], rects[i][0]))
+
+        kept_idxs = sorted(kept_idxs, key=lambda i: (rects[i][1], rects[i][0]))
+        text = " ".join(
+            (detections[i].get("text") or "").strip()
+            for i in kept_idxs
+            if (detections[i].get("text") or "").strip()
+        )
+        text = re.sub(r"\s{2,}", " ", text).strip()
+        text = re.sub(r"\b(\w{2,})\s+\1\b", r"\1", text, flags=re.IGNORECASE)
+
+        angles = [detections[i].get("angle", 0.0) for i in kept_idxs] or [0.0]
         avg_angle = float(np.mean(angles)) if angles else 0.0
         region_kind = MangaTranslator._classify_text(text)
 
@@ -1373,31 +1504,62 @@ class MangaTranslator:
         )
 
     
+      
+      
+      
+      
       merged_flags = [False] * len(regions)
       for i, ri in enumerate(regions):
         if merged_flags[i] or ri.kind not in ("sfx", "promo", "junk"):
             continue
+        sfx_text = (ri.source_text or "").strip()
         for j, rj in enumerate(regions):
             if i == j or merged_flags[j] or rj.kind != "dialogue":
                 continue
             x1, y1, w1, h1 = ri.rect
             x2, y2, w2, h2 = rj.rect
-            margin = max(20, int(min(h1, h2) * 0.70))
-            a = (x1 - margin, y1 - margin, x1 + w1 + margin, y1 + h1 + margin)
-            b = (x2 - margin, y2 - margin, x2 + w2 + margin, y2 + h2 + margin)
-            if not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1]):
-                
-                rj.boxes = list(rj.boxes) + list(ri.boxes)
-                parts = [rj.source_text.strip(), ri.source_text.strip()]
-                rj.source_text = " ".join(p for p in parts if p)
-                x0 = min(rj.rect[0], ri.rect[0])
-                y0 = min(rj.rect[1], ri.rect[1])
-                x1b = max(rj.rect[0] + rj.rect[2], ri.rect[0] + ri.rect[2])
-                y1b = max(rj.rect[1] + rj.rect[3], ri.rect[1] + ri.rect[3])
-                rj.rect = (x0, y0, x1b - x0, y1b - y0)
-                rj.kind = "dialogue"
-                merged_flags[i] = True
-                break
+            cx1 = x1 + w1 / 2.0
+            cy1 = y1 + h1 / 2.0
+            cx2 = x2 + w2 / 2.0
+            cy2 = y2 + h2 / 2.0
+            avg_w = max(1.0, (w1 + w2) / 2.0)
+            avg_h = max(1.0, (h1 + h2) / 2.0)
+
+            
+            if abs(cx1 - cx2) > max(avg_w * 0.55, 45):
+                continue
+
+            
+            pad = max(8, int(min(h1, h2) * 0.35))
+            inside = (
+                x2 - pad <= cx1 <= x2 + w2 + pad
+                and y2 - pad <= cy1 <= y2 + h2 + pad
+            )
+            
+            vgap = abs(cy1 - cy2) - (h1 + h2) / 2.0
+            stacked = vgap < 18 and abs(cx1 - cx2) < max(avg_w * 0.40, 35)
+
+            
+            if ri.kind == "sfx" and len(sfx_text) >= 4 and not inside:
+                continue
+            if not (inside or stacked):
+                continue
+
+            rj.boxes = list(rj.boxes) + list(ri.boxes)
+            
+            parts = sorted(
+                [(rj.rect[1], rj.source_text.strip()), (ri.rect[1], ri.source_text.strip())],
+                key=lambda t: t[0],
+            )
+            rj.source_text = " ".join(t[1] for t in parts if t[1])
+            x0 = min(rj.rect[0], ri.rect[0])
+            y0 = min(rj.rect[1], ri.rect[1])
+            x1b = max(rj.rect[0] + rj.rect[2], ri.rect[0] + ri.rect[2])
+            y1b = max(rj.rect[1] + rj.rect[3], ri.rect[1] + ri.rect[3])
+            rj.rect = (x0, y0, x1b - x0, y1b - y0)
+            rj.kind = "dialogue"
+            merged_flags[i] = True
+            break
 
       regions = [r for i, r in enumerate(regions) if not merged_flags[i]]
       return regions
@@ -1439,6 +1601,15 @@ class MangaTranslator:
             if a == b:
                 return True
             if len(a) >= 4 and (a in b or b in a):
+                return True
+            na = re.sub(r"[^a-z0-9\uac00-\ud7a3]", "", a)
+            nb = re.sub(r"[^a-z0-9\uac00-\ud7a3]", "", b)
+            if not na or not nb:
+                return False
+            if na == nb:
+                return True
+            shorter, longer = (na, nb) if len(na) <= len(nb) else (nb, na)
+            if len(shorter) >= 4 and shorter in longer:
                 return True
             return False
 
@@ -1961,25 +2132,35 @@ class MangaTranslator:
 
     @staticmethod
     def _stroke_width_for(size: int) -> int:
-        return max(2, size // 14)
+        
+        if size <= 14:
+            return 1
+        if size <= 22:
+            return 2
+        return max(2, size // 16)
 
     def _wrap_and_fit(
         self, draw: ImageDraw.ImageDraw, text: str, max_w: int, max_h: int
     ) -> Tuple[ImageFont.FreeTypeFont, List[str], int]:
+        
         words = text.split()
         if not words:
             words = [""]
 
-        def wrap_at(size: int):
+        
+        def wrap_at(size: int, line_gap: int):
             font = self._load_font(size)
             sw = self._stroke_width_for(size)
+            
+            usable_w = max(8, max_w - 2 * sw)
             lines: List[str] = []
             current = ""
             for word in words:
                 candidate = f"{current} {word}".strip()
-                w = draw.textbbox((0, 0), self._shape_farsi(candidate), font=font,
-                                   stroke_width=sw)[2]
-                if w <= max_w or not current:
+                w = draw.textbbox(
+                    (0, 0), self._shape_farsi(candidate), font=font, stroke_width=sw
+                )[2]
+                if w <= usable_w or not current:
                     current = candidate
                 else:
                     lines.append(current)
@@ -1987,25 +2168,51 @@ class MangaTranslator:
             if current:
                 lines.append(current)
 
-            line_h = font.getbbox("آی", stroke_width=sw)[3] + 5
-            total_h = line_h * len(lines)
+            
+            bb = font.getbbox("آیگچ", stroke_width=sw)
+            glyph_h = bb[3] - bb[1]
+            line_h = glyph_h + line_gap
+            total_h = line_h * len(lines) if lines else line_h
+            
+            total_h += 2 * sw
             widest = max(
                 (
-                    draw.textbbox((0, 0), self._shape_farsi(l), font=font, stroke_width=sw)[2]
+                    draw.textbbox(
+                        (0, 0), self._shape_farsi(l), font=font, stroke_width=sw
+                    )[2]
                     for l in lines
                 ),
                 default=0,
             )
-            return font, lines, sw, total_h, widest
+            return font, lines, sw, total_h, widest, line_h
+
+        
+        n_words = len(words)
+        short_text = n_words <= 2 and sum(len(w) for w in words) <= 12
+        min_size = 14 if short_text else 11
+        max_size = 48
 
         smallest_attempt = None
-        for size in range(52, 9, -1):
-            font, lines, sw, total_h, widest = wrap_at(size)
-            smallest_attempt = (font, lines, sw)
+        
+        for line_gap in (4, 2, 1, 0):
+            for size in range(max_size, min_size - 1, -1):
+                font, lines, sw, total_h, widest, line_h = wrap_at(size, line_gap)
+                smallest_attempt = (font, lines, sw, line_h)
+                if total_h <= max_h and widest <= max_w:
+                    return font, lines, sw
+
+        
+        for size in range(min_size - 1, 9, -1):
+            font, lines, sw, total_h, widest, line_h = wrap_at(size, 0)
+            smallest_attempt = (font, lines, sw, line_h)
             if total_h <= max_h and widest <= max_w:
                 return font, lines, sw
 
-        return smallest_attempt
+        if smallest_attempt is None:
+            font = self._load_font(11)
+            sw = self._stroke_width_for(11)
+            return font, [" ".join(words)], sw
+        return smallest_attempt[0], smallest_attempt[1], smallest_attempt[2]
 
     @staticmethod
     def _pick_text_and_stroke(
@@ -2079,9 +2286,18 @@ class MangaTranslator:
                 continue
 
             x, y, w, h = region.rect
-            pad = max(3, int(min(w, h) * 0.05))
-            box_w = max(12, w - 2 * pad)
-            box_h = max(12, h - 2 * pad)
+            
+            short = len((region.translated_text or "").split()) <= 2
+            if short and (w < 90 or h < 50):
+                expand = max(6, int(max(w, h) * 0.15))
+                x = max(0, x - expand // 2)
+                y = max(0, y - expand // 2)
+                w = w + expand
+                h = h + expand
+            
+            pad = max(3, int(min(w, h) * (0.05 if short else 0.08)))
+            box_w = max(14, w - 2 * pad)
+            box_h = max(14, h - 2 * pad)
 
             font, lines, sw = self._wrap_and_fit(draw, region.translated_text, box_w, box_h)
             text_rgb, stroke_rgb = self._pick_text_and_stroke(image, original_image, region)
@@ -2089,15 +2305,28 @@ class MangaTranslator:
             angle = getattr(region, "angle", 0.0)
 
             if abs(angle) < 8:
-                line_h = font.getbbox("آی", stroke_width=sw)[3] + 5
-                total_h = line_h * len(lines)
+                bb = font.getbbox("آیگچ", stroke_width=sw)
+                glyph_h = bb[3] - bb[1]
+                
+                n = max(1, len(lines))
+                
+                avail = max(glyph_h, box_h - 2 * sw)
+                line_h = max(glyph_h + 1, avail // n) if n else glyph_h + 2
+                
+                if line_h * n + 2 * sw > box_h:
+                    line_h = max(glyph_h, (box_h - 2 * sw) // n)
+                total_h = line_h * n
                 start_y = y + pad + max(0, (box_h - total_h) // 2)
+                
+                bottom_limit = y + pad + box_h
 
                 for i, line in enumerate(lines):
                     shaped = self._shape_farsi(line)
                     line_w = draw.textbbox((0, 0), shaped, font=font, stroke_width=sw)[2]
                     line_x = x + pad + max(0, (box_w - line_w) // 2)
                     line_y = start_y + i * line_h
+                    if line_y + glyph_h > bottom_limit + sw:
+                        break
                     draw.text(
                         (line_x, line_y),
                         shaped,
