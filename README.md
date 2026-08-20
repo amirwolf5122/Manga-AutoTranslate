@@ -12,9 +12,9 @@
 
 ## نمونه خروجی
 
-| قبل | بعد |
-|:---:|:---:|
-| ![before](examples/before.png) | ![after](examples/after.png) |
+| قبل | دیباگ | بعد |
+|:---:|:---:|:---:|
+| ![before](examples/before.png) | ![after](examples/debug.png) | ![after](examples/after.png) |
 
 
 ---
