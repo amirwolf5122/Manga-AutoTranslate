@@ -1170,201 +1170,237 @@ class MangaTranslator:
         return kept
 
     def group_into_regions(self, detections: List[dict], y_offset: int = 0) -> List[TextRegion]:
-        if not detections:
-            return []
+      if not detections:
+        return []
 
-        n = len(detections)
-        rects = []
-        for d in detections:
-            x, y, w, h = cv2.boundingRect(d["poly"])
-            rects.append((x, y + y_offset, w, h))
+      n = len(detections)
+      rects = []
+      texts = []
+      for d in detections:
+        x, y, w, h = cv2.boundingRect(d["poly"])
+        rects.append((x, y + y_offset, w, h))
+        texts.append((d.get("text") or "").strip())
 
-        parent = list(range(n))
+      parent = list(range(n))
 
-        def find(a):
-            while parent[a] != a:
-                parent[a] = parent[parent[a]]
-                a = parent[a]
-            return a
+      def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
 
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
+      def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
 
-        def expanded_overlap(r1, r2, margin):
-            x1, y1, w1, h1 = r1
-            x2, y2, w2, h2 = r2
+      def iou(r1, r2):
+        x1, y1, w1, h1 = r1
+        x2, y2, w2, h2 = r2
+        xi1, yi1 = max(x1, x2), max(y1, y2)
+        xi2, yi2 = min(x1 + w1, x2 + w2), min(y1 + h1, y2 + h2)
+        inter = max(0, xi2 - xi1) * max(0, yi2 - yi1)
+        union_area = w1 * h1 + w2 * h2 - inter
+        return inter / union_area if union_area > 0 else 0.0
+
+      def pair_metrics(r1, r2):
+        x1, y1, w1, h1 = r1
+        x2, y2, w2, h2 = r2
+        cy1 = y1 + h1 / 2.0
+        cy2 = y2 + h2 / 2.0
+        cx1 = x1 + w1 / 2.0
+        cx2 = x2 + w2 / 2.0
+        vgap = abs(cy1 - cy2) - (h1 + h2) / 2.0
+        hgap = abs(cx1 - cx2) - (w1 + w2) / 2.0
+        avg_h = max(1.0, (h1 + h2) / 2.0)
+        avg_w = max(1.0, (w1 + w2) / 2.0)
+        return vgap, hgap, avg_h, avg_w, abs(cx1 - cx2), max(h1, h2), min(h1, h2), min(w1, w2), max(w1, w2)
+
+      def starts_with_lowercase(text: str) -> bool:
+        for ch in text:
+            if ch.isalpha():
+                return ch.islower()
+        return False
+
+      def likely_same_bubble(i, j) -> bool:
+        r1, r2 = rects[i], rects[j]
+        t1, t2 = texts[i], texts[j]
+        k1 = detections[i].get("kind", "dialogue")
+        k2 = detections[j].get("kind", "dialogue")
+
+        if r1[1] > r2[1]:
+          r1, r2 = r2, r1
+          t1, t2 = t2, t1
+
+        vgap, hgap, avg_h, avg_w, cx_dist, h_max, h_min, w_min, w_max = pair_metrics(r1, r2)
+        short1 = (t1 or "")[:25]
+        short2 = (t2 or "")[:25]
+        if "MOMENT" in (t1 + t2).upper() or "WHERE YOU" in (t1 + t2).upper() or "OUTSIDE" in (t1 + t2).upper():
+          print(f"  [VGAP DEBUG] \"{short1}\" <-> \"{short2}\"")
+          print(f"       vgap={vgap:.1f} | avg_h={avg_h:.1f} | cx_dist={cx_dist:.1f}")
+    
+        if vgap > 28:
+          if "MOMENT" in (t1 + t2).upper() or "WHERE" in (t1 + t2).upper():
+            print(f"  [BLOCKED] جدا نگه داشته شد → vgap={vgap:.1f} | \"{t1[:20]}\" <-> \"{t2[:20]}\"")
+          return False
+    
+
+        
+        small_attach = (
+            h_min <= 28 or (h_max > h_min * 2.5 and h_min <= 40)
+        ) and (k1 in ("junk", "sfx", "promo") or k2 in ("junk", "sfx", "promo"))
+
+        if h_max > h_min * 3.0 and not small_attach:
+          return False
+
+        if cx_dist > max(avg_w * 0.55, 45) and not small_attach:
+          return False
+        if small_attach and cx_dist > max(avg_w * 0.85, 60):
+          return False
+
+        if starts_with_lowercase(t2) and cx_dist < max(avg_w * 0.40, 35) and vgap < 25:
+          return True
+
+        width_ratio = w_min / w_max if w_max > 0 else 0
+        centers_aligned = cx_dist < max(avg_w * 0.28, 20)
+
+        if width_ratio > 0.60 and centers_aligned and vgap < 18:
+          return True
+
+        margin = max(2, int(avg_h * 0.08))
+        if small_attach:
+          margin = max(margin, 10)
+        x1, y1, w1, h1 = r1
+        x2, y2, w2, h2 = r2
+        a = (x1 - margin, y1 - margin, x1 + w1 + margin, y1 + h1 + margin)
+        b = (x2 - margin, y2 - margin, x2 + w2 + margin, y2 + h2 + margin)
+        overlaps = not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
+
+        if not overlaps:
+          return False
+
+        if iou(r1, r2) >= 0.25:
+          return True
+
+        if centers_aligned and vgap < 14:
+          return True
+
+        if small_attach and vgap < 20 and cx_dist < max(avg_w * 0.7, 50):
+          return True
+
+        return False
+ 
+    
+      for i in range(n):
+        ki = detections[i].get("kind", "dialogue")
+        if ki not in ("sfx", "promo", "junk"):
+            continue
+        for j in range(n):
+            if i == j:
+                continue
+            if detections[j].get("kind", "dialogue") != "dialogue":
+                continue
+            
+            near_margin = max(18, int(min(rects[i][3], rects[j][3]) * 0.70))
+            x1, y1, w1, h1 = rects[i]
+            x2, y2, w2, h2 = rects[j]
+            a = (x1 - near_margin, y1 - near_margin, x1 + w1 + near_margin, y1 + h1 + near_margin)
+            b = (x2 - near_margin, y2 - near_margin, x2 + w2 + near_margin, y2 + h2 + near_margin)
+            if not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1]):
+                detections[i]["kind"] = "dialogue"
+                break
+
+      def kinds_compatible(i, j):
+        ki = detections[i].get("kind", "dialogue")
+        kj = detections[j].get("kind", "dialogue")
+        if ki == kj:
+            return True
+        
+        allowed = {"sfx", "dialogue", "promo", "junk"}
+        if {ki, kj} <= allowed and ("dialogue" in (ki, kj) or "junk" in (ki, kj)):
+            return True
+        return False
+
+    
+      for i in range(n):
+        for j in range(i + 1, n):
+            if not kinds_compatible(i, j):
+                continue
+            if likely_same_bubble(i, j):
+                union(i, j)
+
+    
+      groups = {}
+      for i in range(n):
+        root = find(i)
+        groups.setdefault(root, []).append(i)
+
+      regions = []
+      for gid, idxs in enumerate(groups.values()):
+        
+        
+        boxes = []
+        for i in idxs:
+            poly = np.array(detections[i]["poly"], dtype=np.int32).copy()
+            if poly.ndim == 2 and poly.shape[1] == 2 and y_offset:
+                poly = poly.copy()
+                poly[:, 1] = poly[:, 1] + int(y_offset)
+            elif poly.ndim == 3 and poly.shape[-1] == 2 and y_offset:
+                poly = poly.copy()
+                poly[:, :, 1] = poly[:, :, 1] + int(y_offset)
+            boxes.append(poly)
+        xs = [rects[i][0] for i in idxs]
+        ys = [rects[i][1] for i in idxs]
+        xe = [rects[i][0] + rects[i][2] for i in idxs]
+        ye = [rects[i][1] + rects[i][3] for i in idxs]
+        x0, y0, x1, y1 = min(xs), min(ys), max(xe), max(ye)
+
+        idxs_sorted = sorted(idxs, key=lambda i: (rects[i][1], rects[i][0]))
+        text = " ".join(detections[i]["text"] for i in idxs_sorted)
+        angles = [detections[i].get("angle", 0.0) for i in idxs_sorted]
+        avg_angle = float(np.mean(angles)) if angles else 0.0
+        region_kind = MangaTranslator._classify_text(text)
+
+        regions.append(
+            TextRegion(
+                id=gid,
+                boxes=boxes,
+                source_text=text,
+                rect=(x0, y0, x1 - x0, y1 - y0),
+                angle=avg_angle,
+                kind=region_kind,
+            )
+        )
+
+    
+      merged_flags = [False] * len(regions)
+      for i, ri in enumerate(regions):
+        if merged_flags[i] or ri.kind not in ("sfx", "promo", "junk"):
+            continue
+        for j, rj in enumerate(regions):
+            if i == j or merged_flags[j] or rj.kind != "dialogue":
+                continue
+            x1, y1, w1, h1 = ri.rect
+            x2, y2, w2, h2 = rj.rect
+            margin = max(20, int(min(h1, h2) * 0.70))
             a = (x1 - margin, y1 - margin, x1 + w1 + margin, y1 + h1 + margin)
             b = (x2 - margin, y2 - margin, x2 + w2 + margin, y2 + h2 + margin)
-            return not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
-
-        def pair_metrics(r1, r2):
-            x1, y1, w1, h1 = r1
-            x2, y2, w2, h2 = r2
-            cy1, cy2 = y1 + h1 / 2.0, y2 + h2 / 2.0
-            cx1, cx2 = x1 + w1 / 2.0, x2 + w2 / 2.0
-            vgap = abs(cy1 - cy2) - (h1 + h2) / 2.0
-            hgap = abs(cx1 - cx2) - (w1 + w2) / 2.0
-            avg_h = max(1.0, (h1 + h2) / 2.0)
-            xi1, xi2 = max(x1, x2), min(x1 + w1, x2 + w2)
-            
-            h_overlap_min = max(0.0, xi2 - xi1) / max(1.0, min(w1, w2))
-            h_overlap_max = max(0.0, xi2 - xi1) / max(1.0, max(w1, w2))
-            return vgap, hgap, avg_h, h_overlap_min, h_overlap_max, abs(cx1 - cx2), max(h1, h2), min(h1, h2), min(w1, w2)
-
-        def likely_same_bubble(r1, r2, consecutive: bool = False):
-            vgap, hgap, avg_h, h_ov_min, h_ov_max, cx_dist, h_max, h_min, w_min = pair_metrics(r1, r2)
-
-            
-            if h_max > h_min * 3.5:
-                return False
-
-            
-            margin = max(4, int(avg_h * 0.12))
-            if expanded_overlap(r1, r2, margin=margin):
-                if h_ov_max >= 0.08 or cx_dist <= max(w_min * 0.9, 70):
-                    return True
-
-            return False
-
-        def _boxes_near(r1, r2, margin: int = 20) -> bool:
-            
-            return expanded_overlap(r1, r2, margin=margin)
-
-        
-        
-        
-        
-        for i in range(n):
-            ki = detections[i].get("kind", "dialogue")
-            if ki not in ("sfx", "promo"):
-                continue
-            for j in range(n):
-                if i == j:
-                    continue
-                if detections[j].get("kind", "dialogue") != "dialogue":
-                    continue
-                near_margin = max(18, int(min(rects[i][3], rects[j][3]) * 0.65))
-                if _boxes_near(rects[i], rects[j], margin=near_margin):
-                    detections[i]["kind"] = "dialogue"
-                    break
-
-        def kinds_compatible(i, j):
-            ki = detections[i].get("kind", "dialogue")
-            kj = detections[j].get("kind", "dialogue")
-            if ki == kj:
-                return True
-            
-            if ki == "junk" or kj == "junk":
-                return False
-
-            t1 = (detections[i].get("text") or "").strip()
-            t2 = (detections[j].get("text") or "").strip()
-
-            def mostly_digits(t: str) -> bool:
-                if not t:
-                    return False
-                digits = sum(1 for c in t if c.isdigit() or c in "OoQlI")
-                return digits >= max(3, int(len(t) * 0.6))
-
-            if mostly_digits(t1) or mostly_digits(t2):
-                return False
-
-            
-            if {ki, kj} <= {"sfx", "dialogue", "promo"}:
-                if "dialogue" in (ki, kj):
-                    near_margin = max(14, int(min(rects[i][3], rects[j][3]) * 0.55))
-                    if _boxes_near(rects[i], rects[j], margin=near_margin):
-                        return True
-                if ki == "sfx" and kj == "sfx":
-                    return True
-            return False
-
-        
-        
-        merge_margin = max(self.group_margin, 6)
-        for i in range(n):
-            for j in range(i + 1, n):
-                if not kinds_compatible(i, j):
-                    continue
+            if not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1]):
                 
-                if expanded_overlap(rects[i], rects[j], merge_margin):
-                    if likely_same_bubble(rects[i], rects[j]):
-                        union(i, j)
+                rj.boxes = list(rj.boxes) + list(ri.boxes)
+                parts = [rj.source_text.strip(), ri.source_text.strip()]
+                rj.source_text = " ".join(p for p in parts if p)
+                x0 = min(rj.rect[0], ri.rect[0])
+                y0 = min(rj.rect[1], ri.rect[1])
+                x1b = max(rj.rect[0] + rj.rect[2], ri.rect[0] + ri.rect[2])
+                y1b = max(rj.rect[1] + rj.rect[3], ri.rect[1] + ri.rect[3])
+                rj.rect = (x0, y0, x1b - x0, y1b - y0)
+                rj.kind = "dialogue"
+                merged_flags[i] = True
+                break
 
-        groups = {}
-        for i in range(n):
-            root = find(i)
-            groups.setdefault(root, []).append(i)
-
-        regions: List[TextRegion] = []
-        for gid, idxs in enumerate(groups.values()):
-            if not idxs:
-                continue
-
-            boxes = []
-            for i in idxs:
-                if i >= len(detections):
-                    continue
-                poly = detections[i]["poly"].copy()
-                poly[:, 1] += y_offset
-                boxes.append(poly)
-
-            if not boxes:
-                continue
-
-            xs = [rects[i][0] for i in idxs if i < len(rects)]
-            ys = [rects[i][1] for i in idxs if i < len(rects)]
-            xe = [rects[i][0] + rects[i][2] for i in idxs if i < len(rects)]
-            ye = [rects[i][1] + rects[i][3] for i in idxs if i < len(rects)]
-
-            if not xs or not ys or not xe or not ye:
-                continue
-
-            x0, y0, x1, y1 = min(xs), min(ys), max(xe), max(ye)
-
-            valid_idxs = [i for i in idxs if i < len(detections) and i < len(rects)]
-            idxs_sorted = sorted(valid_idxs, key=lambda i: rects[i][1])
-            text = " ".join(detections[i]["text"] for i in idxs_sorted if i < len(detections))
-            angles = [detections[i].get("angle", 0.0) for i in idxs_sorted if i < len(detections)]
-            avg_angle = float(np.mean(angles)) if angles else 0.0
-
-            
-            
-            region_kind = MangaTranslator._classify_text(text)
-
-            regions.append(
-                TextRegion(
-                    id=gid,
-                    boxes=boxes,
-                    source_text=text,
-                    rect=(x0, y0, x1 - x0, y1 - y0),
-                    angle=avg_angle,
-                    kind=region_kind,
-                )
-            )
-
-        
-        
-        
-        for i, ri in enumerate(regions):
-            if ri.kind not in ("sfx", "promo"):
-                continue
-            for j, rj in enumerate(regions):
-                if i == j or rj.kind != "dialogue":
-                    continue
-                x1, y1, w1, h1 = ri.rect
-                x2, y2, w2, h2 = rj.rect
-                margin = max(18, int(min(h1, h2) * 0.65))
-                a = (x1 - margin, y1 - margin, x1 + w1 + margin, y1 + h1 + margin)
-                b = (x2 - margin, y2 - margin, x2 + w2 + margin, y2 + h2 + margin)
-                if not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1]):
-                    ri.kind = "dialogue"
-                    break
-
-        return regions
-
+      regions = [r for i, r in enumerate(regions) if not merged_flags[i]]
+      return regions
     @staticmethod
     def _deduplicate_regions(regions: List[TextRegion], overlap_thresh: float = 0.25) -> List[TextRegion]:
         if not regions:
@@ -1432,116 +1468,45 @@ class MangaTranslator:
         return unique
 
 
-    @staticmethod
-    def _merge_vertically_stacked_regions(regions: List[TextRegion], max_vgap: float = 36.0) -> List[TextRegion]:
-        if len(regions) <= 1:
-            return regions
-
-        n = len(regions)
-        parent = list(range(n))
-
-        def find(a):
-            while parent[a] != a:
-                parent[a] = parent[parent[a]]
-                a = parent[a]
-            return a
-
-        def union(a, b):
-            ra, rb = find(a), find(b)
-            if ra != rb:
-                parent[ra] = rb
-
-        def metrics(r1: TextRegion, r2: TextRegion):
-            x1, y1, w1, h1 = r1.rect
-            x2, y2, w2, h2 = r2.rect
-            cy1, cy2 = y1 + h1 / 2.0, y2 + h2 / 2.0
-            cx1, cx2 = x1 + w1 / 2.0, x2 + w2 / 2.0
-            vgap = abs(cy1 - cy2) - (h1 + h2) / 2.0
-            avg_h = max(1.0, (h1 + h2) / 2.0)
-            xi1, xi2 = max(x1, x2), min(x1 + w1, x2 + w2)
-            h_ov = max(0.0, xi2 - xi1) / max(1.0, min(w1, w2))
-            h_ov_max = max(0.0, xi2 - xi1) / max(1.0, max(w1, w2))
-            cx_dist = abs(cx1 - cx2)
-            return vgap, avg_h, h_ov, h_ov_max, cx_dist, max(h1, h2), min(h1, h2), min(w1, w2)
-
-        for i in range(n):
-            for j in range(i + 1, n):
-                
-                k1 = getattr(regions[i], "kind", "dialogue")
-                k2 = getattr(regions[j], "kind", "dialogue")
-                if k1 == "promo" or k2 == "promo":
-                    continue
-                if k1 == "sfx" or k2 == "sfx":
-                    
-                    if k1 != k2:
-                        continue
-                vgap, avg_h, h_ov, h_ov_max, cx_dist, h_max, h_min, w_min = metrics(regions[i], regions[j])
-
-                
-                x1, y1, w1, h1 = regions[i].rect
-                x2, y2, w2, h2 = regions[j].rect
-                margin = max(4, int(avg_h * 0.12))
-                a = (x1 - margin, y1 - margin, x1 + w1 + margin, y1 + h1 + margin)
-                b = (x2 - margin, y2 - margin, x2 + w2 + margin, y2 + h2 + margin)
-                boxes_hit = not (a[2] < b[0] or b[2] < a[0] or a[3] < b[1] or b[3] < a[1])
-
-                if not boxes_hit:
-                    continue
-                if h_max > h_min * 3.5:
-                    continue
-                
-                if h_ov >= 0.08 or cx_dist <= max(w_min * 0.9, 70):
-                    union(i, j)
-
-        groups = {}
-        for i in range(n):
-            groups.setdefault(find(i), []).append(i)
-
-        merged: List[TextRegion] = []
-        for idxs in groups.values():
-            if len(idxs) == 1:
-                merged.append(regions[idxs[0]])
-                continue
-            idxs_sorted = sorted(idxs, key=lambda i: regions[i].rect[1])
-            boxes = []
-            for i in idxs_sorted:
-                boxes.extend(regions[i].boxes)
-            xs = [regions[i].rect[0] for i in idxs_sorted]
-            ys = [regions[i].rect[1] for i in idxs_sorted]
-            xe = [regions[i].rect[0] + regions[i].rect[2] for i in idxs_sorted]
-            ye = [regions[i].rect[1] + regions[i].rect[3] for i in idxs_sorted]
-            x0, y0, x1, y1 = min(xs), min(ys), max(xe), max(ye)
-            text = " ".join(regions[i].source_text for i in idxs_sorted if regions[i].source_text)
-            angles = [regions[i].angle for i in idxs_sorted]
-            avg_angle = float(sum(angles) / len(angles)) if angles else 0.0
-            kind = MangaTranslator._classify_text(text)
-            merged.append(
-                TextRegion(
-                    id=idxs_sorted[0],
-                    boxes=boxes,
-                    source_text=text,
-                    rect=(x0, y0, x1 - x0, y1 - y0),
-                    angle=avg_angle,
-                    kind=kind,
-                )
-            )
-        return merged
-
     def _build_text_mask(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
         h_img, w_img = image.shape[:2]
         text_mask = np.zeros((h_img, w_img), dtype=np.uint8)
         promo_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+        pad = max(2, int(getattr(self, "mask_padding", 3) or 3))
 
         for region in regions:
+            filled = False
             for poly in region.boxes:
                 pts = np.array(poly, np.int32).reshape((-1, 1, 2))
-                cv2.fillPoly(text_mask, [pts], 255)
                 
+                ys = pts[:, 0, 1]
+                xs = pts[:, 0, 0]
+                if np.any(ys < -50) or np.any(ys > h_img + 50) or np.any(xs < -50) or np.any(xs > w_img + 50):
+                    continue
+                cv2.fillPoly(text_mask, [pts], 255)
+                filled = True
                 if getattr(region, "kind", "dialogue") in ("promo", "sfx"):
                     cv2.fillPoly(promo_mask, [pts], 255)
 
+            
+            if not filled:
+                x, y, w, h = region.rect
+                x0 = max(0, int(x) - pad)
+                y0 = max(0, int(y) - pad)
+                x1 = min(w_img, int(x + w) + pad)
+                y1 = min(h_img, int(y + h) + pad)
+                if x1 > x0 and y1 > y0:
+                    text_mask[y0:y1, x0:x1] = 255
+                    if getattr(region, "kind", "dialogue") in ("promo", "sfx"):
+                        promo_mask[y0:y1, x0:x1] = 255
+
         if not np.any(text_mask):
             return text_mask
+
+        
+        if pad > 0:
+            k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (pad * 2 + 1, pad * 2 + 1))
+            text_mask = cv2.dilate(text_mask, k, iterations=1)
 
         hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
         lower_purple = np.array([110, 15, 15])
@@ -1553,7 +1518,6 @@ class MangaTranslator:
 
         full_target_mask = cv2.bitwise_or(text_mask, purple_around_text)
 
-        
         if np.any(promo_mask):
             promo_dilated = cv2.dilate(
                 promo_mask,
@@ -2247,54 +2211,45 @@ class MangaTranslator:
 
 
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
-        vis = image.copy()
-        color_map = {
-            "dialogue": (0, 0, 255),      
-            "promo": (0, 140, 255),       
-            "sfx": (255, 200, 0),         
-            "junk": (128, 128, 128),      
-        }
-        for r in regions:
-            kind = getattr(r, "kind", "dialogue") or "dialogue"
-            color = color_map.get(kind, (0, 0, 255))
-            x, y, w, h = r.rect
-            
-            cv2.rectangle(vis, (x, y), (x + w, y + h), color, 3)
-            
-            for poly in r.boxes:
-                pts = np.array(poly, dtype=np.int32).reshape((-1, 1, 2))
-                cv2.polylines(vis, [pts], isClosed=True, color=color, thickness=1)
+      vis = image.copy()
 
-            
-            tag = {"dialogue": "TXT", "promo": "PROMO", "sfx": "SFX", "junk": "JUNK"}.get(kind, kind)
-            label = f"[{r.id}] {tag}"
-            
-            (tw, th), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-            ly = max(0, y - 6)
-            cv2.rectangle(vis, (x, ly - th - 4), (x + tw + 6, ly + 2), (0, 0, 0), -1)
-            cv2.putText(
-                vis, label, (x + 3, ly - 2),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2, cv2.LINE_AA,
-            )
-            
-            src = (r.source_text or "")[:40]
-            if src:
-                cv2.putText(
-                    vis, src, (x + 3, min(y + h + 16, vis.shape[0] - 4)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1, cv2.LINE_AA,
-                )
+    
+      colors = {
+        "dialogue": (0, 0, 255),      
+        "promo": (0, 165, 255),       
+        "sfx": (255, 255, 0),         
+        "junk": (128, 128, 128),      
+    }
+
+      for r in regions:
+        x, y, w, h = r.rect
+        color = colors.get(r.kind, (0, 0, 255))
+
         
-        legend = [
-            ("dialogue = RED", (0, 0, 255)),
-            ("promo = ORANGE", (0, 140, 255)),
-            ("sfx = CYAN", (255, 200, 0)),
-            ("junk = GRAY", (128, 128, 128)),
-        ]
-        ly = 24
-        for txt, col in legend:
-            cv2.putText(vis, txt, (10, ly), cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2, cv2.LINE_AA)
-            ly += 22
-        return vis
+        cv2.rectangle(vis, (x, y), (x + w, y + h), color, 2)
+
+        
+        cx = x + w // 2
+        
+        cv2.line(vis, (cx, y), (cx, y + h), (255, 0, 255), 2)  
+
+        
+        cv2.circle(vis, (cx, y + h // 2), 4, (0, 255, 255), -1)  
+
+        
+        label = f"[{r.id}] {r.kind[:3].upper()}"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+        cv2.rectangle(vis, (x, y - th - 6), (x + tw + 4, y), color, -1)
+        cv2.putText(vis, label, (x + 2, y - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+        
+        short = (r.source_text or "")[:28]
+        if short:
+            cv2.putText(vis, short, (x, y + h + 14),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 200, 0), 1, cv2.LINE_AA)
+
+      return vis
 
     def process_core(self, image: np.ndarray) -> np.ndarray:
         h, w = image.shape[:2]
@@ -2323,7 +2278,6 @@ class MangaTranslator:
 
         unique_regions = self._deduplicate_regions(all_raw_regions)
         
-        unique_regions = self._merge_vertically_stacked_regions(unique_regions, max_vgap=22.0)
         if self.reading_order == "rtl":
             unique_regions.sort(key=lambda r: (r.rect[1] // 80, -(r.rect[0] + r.rect[2])))
         else:
