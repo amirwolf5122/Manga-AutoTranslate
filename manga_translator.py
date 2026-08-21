@@ -3180,7 +3180,7 @@ def build_arg_parser():
                    help="آستانه‌ی اطمینان تشخیص حباب RT-DETR (پیش‌فرض 0.35)")
     p.add_argument("--det-iou", type=float, default=0.45,
                    help="آستانه‌ی IoU برای NMS باکس‌های تشخیص‌داده‌شده (پیش‌فرض 0.45)")
-    p.add_argument("--stitch-max-height", type=int, default=8000,
+    p.add_argument("--stitch-max-height", type=int, default=12000,
                    help="سقف ارتفاع هر نوار چسبانده‌شده (پیش‌فرض ۸۰۰۰). ۰ = خاموش.")
     p.add_argument("--stitch-short-threshold", type=int, default=6000,
                    help="صفحاتی کوتاه‌تر از این ارتفاع (پیش‌فرض ۶۰۰۰px) با هم چسبانده می‌شوند.")
