@@ -1786,9 +1786,8 @@ class MangaTranslator:
         
         
         
-        
         max_chunk = 4000
-        overlap = 250
+        overlap = 0
         chunk_ranges = []
         y = 0
         while y < h:
@@ -1797,6 +1796,9 @@ class MangaTranslator:
             if y_end == h:
                 break
             y = y_end - overlap
+
+        
+        cut_ys = [y1 for (_, y1) in chunk_ranges[:-1]]
 
         all_regions: List[TextRegion] = []
         tasks = [(i, r[0], r[1], image) for i, r in enumerate(chunk_ranges)]
@@ -1810,8 +1812,13 @@ class MangaTranslator:
                     all_regions.extend(res)
 
         
-        
         unique_regions = self._dedupe_regions_by_rect(all_regions, iou_thresh=0.4)
+        before_merge = len(unique_regions)
+        unique_regions = self._merge_vertically_split_regions(
+            unique_regions, cut_ys=cut_ys, max_gap=60, edge_margin=80
+        )
+        if len(unique_regions) < before_merge:
+            print(f"    [*] {before_merge - len(unique_regions)} حباب نصفه (برش chunk) به هم وصل شد.")
 
         if self.reading_order == "rtl":
             unique_regions.sort(key=lambda r: (r.rect[1] // 80, -(r.rect[0] + r.rect[2])))
@@ -1903,6 +1910,140 @@ class MangaTranslator:
             if not dup:
                 kept.append(r)
         return kept
+
+    @staticmethod
+    def _merge_vertically_split_regions(
+        regions: List[TextRegion],
+        cut_ys: Optional[List[int]] = None,
+        max_gap: int = 60,
+        edge_margin: int = 80,
+        min_x_overlap_ratio: float = 0.30,
+    ) -> List[TextRegion]:
+        if len(regions) < 2:
+            return regions
+
+        cut_ys = cut_ys or []
+
+        def x_overlap_ratio(a: TextRegion, b: TextRegion) -> float:
+            ax, _, aw, _ = a.rect
+            bx, _, bw, _ = b.rect
+            left = max(ax, bx)
+            right = min(ax + aw, bx + bw)
+            inter = max(0, right - left)
+            if inter <= 0:
+                return 0.0
+            return inter / float(min(aw, bw) or 1)
+
+        def touches_cut(r: TextRegion) -> bool:
+            
+            if not cut_ys:
+                return True  
+            y1 = r.rect[1]
+            y2 = r.rect[1] + r.rect[3]
+            for cy in cut_ys:
+                if abs(y2 - cy) <= edge_margin or abs(y1 - cy) <= edge_margin:
+                    return True
+            return False
+
+        def near_same_cut(a: TextRegion, b: TextRegion) -> bool:
+            
+            if not cut_ys:
+                return True
+            ay1, ay2 = a.rect[1], a.rect[1] + a.rect[3]
+            by1, by2 = b.rect[1], b.rect[1] + b.rect[3]
+            for cy in cut_ys:
+                a_near = abs(ay2 - cy) <= edge_margin or abs(ay1 - cy) <= edge_margin
+                b_near = abs(by2 - cy) <= edge_margin or abs(by1 - cy) <= edge_margin
+                if a_near and b_near:
+                    
+                    a_above = ay2 <= cy + edge_margin and ay1 < cy
+                    b_below = by1 >= cy - edge_margin and by2 > cy
+                    a_below = ay1 >= cy - edge_margin and ay2 > cy
+                    b_above = by2 <= cy + edge_margin and by1 < cy
+                    if (a_above and b_below) or (b_above and a_below):
+                        return True
+            return False
+
+        
+        ordered = sorted(regions, key=lambda r: (r.rect[1], r.rect[0]))
+        used = [False] * len(ordered)
+        merged: List[TextRegion] = []
+
+        for i, a in enumerate(ordered):
+            if used[i]:
+                continue
+            cur = a
+            used[i] = True
+            
+            if not touches_cut(cur):
+                merged.append(cur)
+                continue
+
+            changed = True
+            while changed:
+                changed = False
+                for j, b in enumerate(ordered):
+                    if used[j]:
+                        continue
+                    if cur.kind != b.kind:
+                        continue
+                    if x_overlap_ratio(cur, b) < min_x_overlap_ratio:
+                        continue
+                    if not near_same_cut(cur, b):
+                        continue
+
+                    cy1 = cur.rect[1]
+                    cy2 = cur.rect[1] + cur.rect[3]
+                    by1 = b.rect[1]
+                    by2 = b.rect[1] + b.rect[3]
+
+                    if by1 >= cy1:
+                        gap = by1 - cy2
+                    else:
+                        gap = cy1 - by2
+                    if gap > max_gap or gap < -15:  
+                        continue
+
+                    
+                    nx = min(cur.rect[0], b.rect[0])
+                    ny = min(cy1, by1)
+                    nw = max(cur.rect[0] + cur.rect[2], b.rect[0] + b.rect[2]) - nx
+                    nh = max(cy2, by2) - ny
+
+                    if cy1 <= by1:
+                        top_txt, bot_txt = (cur.source_text or "").strip(), (b.source_text or "").strip()
+                    else:
+                        top_txt, bot_txt = (b.source_text or "").strip(), (cur.source_text or "").strip()
+
+                    
+                    if top_txt and bot_txt:
+                        if bot_txt.startswith(top_txt[-min(20, len(top_txt)):]):
+                            joined = top_txt + bot_txt[len(top_txt[-min(20, len(top_txt)):]):]
+                        elif top_txt.endswith(bot_txt[:min(20, len(bot_txt))]):
+                            joined = top_txt
+                        else:
+                            joined = (top_txt + " " + bot_txt).strip()
+                    else:
+                        joined = (top_txt + " " + bot_txt).strip()
+                    joined = re.sub(r"\s{2,}", " ", joined)
+
+                    conf = max(cur.det_confidence, b.det_confidence)
+                    boxes = list(cur.boxes or []) + list(b.boxes or [])
+                    cur = TextRegion(
+                        id=0,
+                        boxes=boxes,
+                        source_text=joined,
+                        rect=(nx, ny, nw, nh),
+                        angle=0.0,
+                        kind=cur.kind,
+                        det_class=cur.det_class or b.det_class,
+                        det_confidence=conf,
+                    )
+                    used[j] = True
+                    changed = True
+            merged.append(cur)
+
+        return merged
 
     @staticmethod
     def _is_mostly_blank(image: np.ndarray, std_thresh: float = 12.0, unique_thresh: int = 24) -> bool:
@@ -2524,17 +2665,57 @@ html, body { background: #0a0a0b; }
                 out.append(s)
         return out
 
+    @staticmethod
+    def _find_safe_cut_y(
+        image: np.ndarray,
+        target_y: int,
+        search_up: int = 900,
+        search_down: int = 200,
+        band: int = 12,
+    ) -> int:
+        h = image.shape[0]
+        if h <= 1:
+            return max(0, min(target_y, h))
+
+        y_lo = max(band, target_y - search_up)
+        y_hi = min(h - band, target_y + search_down)
+        if y_lo >= y_hi:
+            return max(0, min(target_y, h))
+
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+
+        best_y = target_y
+        best_score = float("inf")
+
+        
+        for y in range(y_lo, y_hi + 1, 2):
+            strip = gray[max(0, y - band // 2): min(h, y + band // 2 + 1), :]
+            if strip.size == 0:
+                continue
+            
+            score = float(np.std(strip))
+            
+            mean = float(np.mean(strip))
+            if mean > 230 or mean < 25:
+                score *= 0.55
+            
+            score += abs(y - target_y) * 0.02
+            if score < best_score:
+                best_score = score
+                best_y = y
+
+        return int(best_y)
+
     def _stitch_pages_for_efficiency(self, image_files: List[str], work_dir: str) -> List[str]:
         if self.stitch_max_height <= 0 or len(image_files) <= 1:
             return image_files
 
-        short_max = self.stitch_short_threshold if self.stitch_short_threshold > 0 else self.stitch_max_height
         max_h = self.stitch_max_height
-
         os.makedirs(work_dir, exist_ok=True)
         result: List[str] = []
         start_idx = 0
 
+        
         if self.stitch_keep_first and len(image_files) >= 1:
             first_out = os.path.join(work_dir, "strip_000_cover" + os.path.splitext(image_files[0])[1])
             if not os.path.isfile(first_out):
@@ -2555,6 +2736,7 @@ html, body { background: #0a0a0b; }
             raw_pages.append(im)
         if not raw_pages:
             return image_files
+
         widths.sort()
         target_w = widths[len(widths) // 2]
 
@@ -2566,9 +2748,13 @@ html, body { background: #0a0a0b; }
                 im = cv2.resize(im, (target_w, new_h), interpolation=cv2.INTER_AREA)
             normalized.append(im)
 
+        
+        long_img = np.vstack(normalized)
+        n_pages = len(normalized)
+        total_h = long_img.shape[0]
+        print(f"    [*] چسباندن {n_pages} صفحه (به‌جز کاور) → نوار یکپارچه {total_h}px")
+
         strip_i = 0
-        short_count = 0
-        tall_count = 0
 
         def emit_image(img: np.ndarray, label: str) -> None:
             nonlocal strip_i
@@ -2578,54 +2764,44 @@ html, body { background: #0a0a0b; }
             print(f"    [+] نوار {strip_i + 1}: {label} ({img.shape[0]}px)")
             strip_i += 1
 
-        def split_and_emit(long_img: np.ndarray, n_pages: int) -> None:
-            total_h = long_img.shape[0]
-            if total_h <= max_h:
-                emit_image(long_img, f"نوار چسبیده ({n_pages} صفحه، تمام {total_h}px)")
-                return
+        
+        if total_h <= max_h:
+            emit_image(long_img, f"نوار کامل ({n_pages} صفحه، {total_h}px)")
+        else:
             y = 0
             part = 0
+            min_strip = max(2000, int(max_h * 0.35))  
             while y < total_h:
-                y2 = min(y + max_h, total_h)
-                if 0 < (total_h - y2) < int(max_h * 0.15):
+                remaining = total_h - y
+                if remaining <= max_h:
                     y2 = total_h
+                else:
+                    ideal = y + max_h
+                    
+                    if (total_h - ideal) < int(max_h * 0.12):
+                        y2 = total_h
+                    else:
+                        
+                        y2 = self._find_safe_cut_y(
+                            long_img,
+                            target_y=ideal,
+                            search_up=min(1200, max_h // 3),
+                            search_down=min(300, remaining - max_h if remaining > max_h else 200),
+                            band=14,
+                        )
+                        
+                        if y2 - y < min_strip:
+                            y2 = min(total_h, y + max_h)
+
                 chunk = long_img[y:y2]
                 part += 1
-                emit_image(chunk, f"تکه {part} از نوار ({n_pages} صفحه، برش {y}:{y2})")
+                cut_note = f"برش امن@{y2}" if y2 != min(y + max_h, total_h) else f"برش {y}:{y2}"
+                emit_image(chunk, f"تکه {part} از نوار ({n_pages} صفحه، {cut_note})")
                 y = y2
-
-        buffer: List[np.ndarray] = []
-
-        def flush_buffer() -> None:
-            nonlocal buffer, short_count
-            if not buffer:
-                return
-            n = len(buffer)
-            short_count += n
-            merged = np.vstack(buffer)
-            print(f"    [*] چسباندن {n} صفحهٔ کوتاه → نوار {merged.shape[0]}px سپس برش تا سقف {max_h}px")
-            split_and_emit(merged, n)
-            buffer = []
-
-        for img in normalized:
-            h = img.shape[0]
-            if h >= short_max:
-                flush_buffer()
-                if h > max_h:
-                    print(f"    [*] صفحهٔ بلند {h}px → برش به سقف {max_h}px")
-                    split_and_emit(img, 1)
-                else:
-                    emit_image(img, f"صفحهٔ بلند تکی (≥{short_max}px)")
-                tall_count += 1
-            else:
-                buffer.append(img)
-
-        flush_buffer()
 
         print(
             f"[*] چسباندن صفحات: {len(image_files)} صفحه → {len(result)} نوار "
-            f"(کوتاه<{short_max}px={short_count} | بلند={tall_count} | "
-            f"سقف برش={max_h}px{'، صفحهٔ اول جدا' if self.stitch_keep_first else ''})"
+            f"(سقف برش={max_h}px{'، صفحهٔ اول جدا' if self.stitch_keep_first else ''})"
         )
         return result if result else image_files
 
@@ -2775,9 +2951,11 @@ html, body { background: #0a0a0b; }
             except Exception as e:
                 print(f"    [!] ساخت HTML همراه ناموفق: {e}")
 
+        
         if self.debug and debug_files:
             stem, ext = os.path.splitext(output_path)
             if not ext:
+                
                 debug_out = output_path.rstrip("/\\") + "-debug"
             else:
                 debug_out = f"{stem}-debug{ext}"
@@ -2801,6 +2979,7 @@ html, body { background: #0a0a0b; }
                     self._write_image(img, debug_out)
                     print(f"[✓] تصویر دیباگ ذخیره شد در: {debug_out}")
                 else:
+                    
                     os.makedirs(debug_out, exist_ok=True)
                     for df in debug_files:
                         shutil.copy(df, os.path.join(debug_out, os.path.basename(df)))
