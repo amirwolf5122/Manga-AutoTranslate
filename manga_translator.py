@@ -3212,8 +3212,8 @@ def build_arg_parser():
     p.add_argument("--img-format", choices=["webp", "png", "jpg"], default="jpg")
     p.add_argument("--quality", type=int, default=95,
                help="کیفیت JPEG/WebP خروجی (پیش‌فرض ۹۵ — کیفیت بالا)")
-    p.add_argument("--max-width", type=int, default=1000,
-               help="حداکثر عرض خروجی به پیکسل (پیش‌فرض ۱۰۰۰ = تقریباً بدون کوچک‌کردن)")
+    p.add_argument("--max-width", type=int, default=1200,
+               help="حداکثر عرض خروجی به پیکسل (پیش‌فرض ۱۲۰۰۰ = تقریباً بدون کوچک‌کردن)")
     p.add_argument("--max-height", type=int, default=0,
                help="حداکثر ارتفاع خروجی به پیکسل (۰ = بدون محدودیت). "
                     "اگر نوار از این ارتفاع بلندتر باشد، با کیفیت بالا کوچک می‌شود تا متن خوانا بماند.")
