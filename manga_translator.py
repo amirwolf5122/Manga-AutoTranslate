@@ -733,8 +733,8 @@ class MangaTranslator:
         return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
 
     
-    def detect_bubbles(self, image_bgr: np.ndarray) -> List[dict]:
-
+    def _detect_bubbles_single(self, image_bgr: np.ndarray, threshold: float) -> List[dict]:
+        
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         pil_image = Image.fromarray(image_rgb)
         h, w = image_bgr.shape[:2]
@@ -747,7 +747,7 @@ class MangaTranslator:
 
         target_sizes = torch.tensor([[h, w]])
         results = self.det_processor.post_process_object_detection(
-            outputs, target_sizes=target_sizes, threshold=self.det_confidence
+            outputs, target_sizes=target_sizes, threshold=threshold
         )[0]
 
         raw = []
@@ -765,9 +765,39 @@ class MangaTranslator:
                 "confidence": score,
                 "rect": [x1, y1, x2, y2],
             })
+        return [b for b in raw if b["class_name"] in ("text_bubble", "text_free")]
 
-        text_boxes = [b for b in raw if b["class_name"] in ("text_bubble", "text_free")]
-        return self._nms_boxes(text_boxes, self.det_iou_threshold)
+    def detect_bubbles(self, image_bgr: np.ndarray) -> List[dict]:
+        h, w = image_bgr.shape[:2]
+        all_boxes: List[dict] = []
+
+        
+        all_boxes.extend(self._detect_bubbles_single(image_bgr, self.det_confidence))
+
+        
+        if h >= 800 and w >= 400:
+            for scale, th_factor in ((0.5, 0.65), (0.35, 0.55)):
+                small_w = max(1, int(w * scale))
+                small_h = max(1, int(h * scale))
+                if small_w < 200 or small_h < 200:
+                    continue
+                small = cv2.resize(image_bgr, (small_w, small_h), interpolation=cv2.INTER_AREA)
+                low_th = max(0.12, self.det_confidence * th_factor)
+                small_boxes = self._detect_bubbles_single(small, low_th)
+                inv = 1.0 / scale
+                for b in small_boxes:
+                    x1, y1, x2, y2 = b["rect"]
+                    b["rect"] = [
+                        int(x1 * inv), int(y1 * inv),
+                        int(x2 * inv), int(y2 * inv),
+                    ]
+                    bw = b["rect"][2] - b["rect"][0]
+                    bh = b["rect"][3] - b["rect"][1]
+                    
+                    if b["class_name"] == "text_free" or (bw * bh) >= (w * h * 0.012):
+                        all_boxes.append(b)
+
+        return self._nms_boxes(all_boxes, self.det_iou_threshold)
 
     @staticmethod
     def _nms_boxes(boxes: List[dict], iou_thresh: float) -> List[dict]:
@@ -982,6 +1012,16 @@ class MangaTranslator:
         if PROMO_RE.search(stripped):
             return "promo"
         if DOMAIN_RE.search(stripped):
+            return "promo"
+        
+        if re.search(r"(?i)\bscans?\b", stripped) and (
+            "#" in stripped or re.search(r"(?i)\b(?:team|group|heroes?|release[ds]?)\b", stripped)
+            or len(stripped) <= 40
+        ):
+            return "promo"
+        if re.search(r"(?i)\breleased?\b", stripped) and re.search(r"\d{1,2}[/\-.]\d{1,2}", stripped):
+            return "promo"
+        if re.search(r"(?i)\bv\d{1,2}\s*c\d{1,2}\b", stripped):  
             return "promo"
         if low_compact in {"org", "com", "net", "www", "http", "https", "wwwcom", "wwworg", "comto", "ink", "scans", "scan", "asura", "asuras", "asuran"}:
             return "promo"
@@ -1813,12 +1853,18 @@ class MangaTranslator:
 
         
         unique_regions = self._dedupe_regions_by_rect(all_regions, iou_thresh=0.4)
+        before_contain = len(unique_regions)
+        unique_regions = self._suppress_contained_regions(unique_regions, containment_thresh=0.70)
+        if len(unique_regions) < before_contain:
+            print(f"    [*] {before_contain - len(unique_regions)} جعبهٔ تو در تو حذف شد (جلوگیری از نوشتن دوباره).")
         before_merge = len(unique_regions)
         unique_regions = self._merge_vertically_split_regions(
             unique_regions, cut_ys=cut_ys, max_gap=60, edge_margin=80
         )
         if len(unique_regions) < before_merge:
             print(f"    [*] {before_merge - len(unique_regions)} حباب نصفه (برش chunk) به هم وصل شد.")
+        
+        unique_regions = self._suppress_contained_regions(unique_regions, containment_thresh=0.70)
 
         if self.reading_order == "rtl":
             unique_regions.sort(key=lambda r: (r.rect[1] // 80, -(r.rect[0] + r.rect[2])))
@@ -1909,6 +1955,52 @@ class MangaTranslator:
                     break
             if not dup:
                 kept.append(r)
+        return kept
+
+    @staticmethod
+    def _suppress_contained_regions(
+        regions: List[TextRegion],
+        containment_thresh: float = 0.70,
+    ) -> List[TextRegion]:
+        if len(regions) < 2:
+            return regions
+
+        def area(r: TextRegion) -> float:
+            return float(max(1, r.rect[2]) * max(1, r.rect[3]))
+
+        def inter_area(a: TextRegion, b: TextRegion) -> float:
+            ax, ay, aw, ah = a.rect
+            bx, by, bw, bh = b.rect
+            xi1, yi1 = max(ax, bx), max(ay, by)
+            xi2, yi2 = min(ax + aw, bx + bw), min(ay + ah, by + bh)
+            return float(max(0, xi2 - xi1) * max(0, yi2 - yi1))
+
+        def score(r: TextRegion) -> tuple:
+            
+            is_bubble = 1 if (r.det_class or "") == "text_bubble" else 0
+            text_len = len((r.source_text or "").strip())
+            return (is_bubble, text_len, r.det_confidence, area(r))
+
+        ordered = sorted(regions, key=score, reverse=True)
+        kept: List[TextRegion] = []
+
+        for r in ordered:
+            drop = False
+            for k in kept:
+                inter = inter_area(r, k)
+                if inter <= 0:
+                    continue
+                ar, ak = area(r), area(k)
+                
+                contain_r_in_k = inter / ar   
+                contain_k_in_r = inter / ak   
+                if contain_r_in_k >= containment_thresh or contain_k_in_r >= containment_thresh:
+                    
+                    drop = True
+                    break
+            if not drop:
+                kept.append(r)
+
         return kept
 
     @staticmethod
@@ -2483,11 +2575,50 @@ class MangaTranslator:
 
     @staticmethod
     def _save_as_pdf(image_paths_in_order: List[str], out_path: str) -> None:
-        images = [Image.open(p).convert("RGB") for p in image_paths_in_order]
+        
+        MAX_SIDE = 12000
+        images = []
+        for p in image_paths_in_order:
+            try:
+                im = Image.open(p)
+                im = im.convert("RGB")
+                w, h = im.size
+                if max(w, h) > MAX_SIDE:
+                    scale = MAX_SIDE / float(max(w, h))
+                    nw = max(1, int(w * scale))
+                    nh = max(1, int(h * scale))
+                    im = im.resize((nw, nh), Image.Resampling.LANCZOS)
+                images.append(im)
+            except Exception as e:
+                print(f"    [!] رد تصویر برای PDF ({os.path.basename(p)}): {e}", file=sys.stderr)
+                continue
         if not images:
-            raise ValueError("هیچ تصویری برای ساخت PDF وجود نداره.")
+            raise ValueError("هیچ تصویر معتبری برای ساخت PDF وجود نداره.")
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        images[0].save(out_path, save_all=True, append_images=images[1:])
+        
+        tmp_path = out_path + ".tmp.pdf"
+        try:
+            images[0].save(
+                tmp_path,
+                save_all=True,
+                append_images=images[1:],
+                format="PDF",
+                resolution=100.0,
+            )
+            os.replace(tmp_path, out_path)
+        except Exception:
+            try:
+                if os.path.isfile(tmp_path):
+                    os.remove(tmp_path)
+            except OSError:
+                pass
+            raise
+        finally:
+            for im in images:
+                try:
+                    im.close()
+                except Exception:
+                    pass
 
     @staticmethod
     def _save_as_zip(folder: str, out_path: str) -> None:
@@ -2925,31 +3056,48 @@ html, body { background: #0a0a0b; }
             print("[!] هیچ خروجی‌ای تولید نشد.", file=sys.stderr)
             return
 
+        
+        if self.debug and not debug_files:
+            debug_dir = os.path.join(cache_dir, "debug")
+            if os.path.isdir(debug_dir):
+                found = sorted(
+                    (os.path.join(debug_dir, n) for n in os.listdir(debug_dir)
+                     if n.lower().endswith(("_debug.jpg", "_debug.jpeg", "_debug.png", "_debug.webp"))),
+                    key=MangaTranslator._natural_sort_key,
+                )
+                debug_files.extend(found)
+                if found:
+                    print(f"[*] {len(found)} تصویر دیباگ از کش بازیابی شد.")
+
         out_ext = os.path.splitext(output_path)[1].lower()
-        if out_ext == ".pdf":
-            self._save_as_pdf(processed_files, output_path)
-            print(f"[✓] PDF نهایی ذخیره شد در: {output_path}")
-        elif out_ext == ".zip":
-            self._save_as_zip(out_dir, output_path)
-            print(f"[✓] فایل zip نهایی ذخیره شد در: {output_path}")
-        elif out_ext == ".html":
-            self._save_as_html(processed_files, output_path)
-            print(f"[✓] HTML نهایی (با تصاویر base64) ذخیره شد در: {output_path}")
-        elif len(processed_files) == 1 and out_ext in IMAGE_EXTS:
-            img = cv2.imread(processed_files[0])
-            self._write_image(img, output_path)
-            print(f"[✓] ذخیره شد در: {output_path}")
-        else:
-            os.makedirs(output_path, exist_ok=True)
-            for f in processed_files:
-                shutil.copy(f, os.path.join(output_path, os.path.basename(f)))
-            print(f"[✓] {len(processed_files)} تصویر در پوشه‌ی {output_path} ذخیره شد.")
-            html_path = output_path.rstrip("/\\") + ".html"
-            try:
-                self._save_as_html(processed_files, html_path)
-                print(f"[✓] HTML همراه هم ساخته شد: {html_path}")
-            except Exception as e:
-                print(f"    [!] ساخت HTML همراه ناموفق: {e}")
+        try:
+            if out_ext == ".pdf":
+                self._save_as_pdf(processed_files, output_path)
+                print(f"[✓] PDF نهایی ذخیره شد در: {output_path}")
+            elif out_ext == ".zip":
+                self._save_as_zip(out_dir, output_path)
+                print(f"[✓] فایل zip نهایی ذخیره شد در: {output_path}")
+            elif out_ext == ".html":
+                self._save_as_html(processed_files, output_path)
+                print(f"[✓] HTML نهایی (با تصاویر base64) ذخیره شد در: {output_path}")
+            elif len(processed_files) == 1 and out_ext in IMAGE_EXTS:
+                img = cv2.imread(processed_files[0])
+                self._write_image(img, output_path)
+                print(f"[✓] ذخیره شد در: {output_path}")
+            else:
+                os.makedirs(output_path, exist_ok=True)
+                for f in processed_files:
+                    shutil.copy(f, os.path.join(output_path, os.path.basename(f)))
+                print(f"[✓] {len(processed_files)} تصویر در پوشه‌ی {output_path} ذخیره شد.")
+                html_path = output_path.rstrip("/\\") + ".html"
+                try:
+                    self._save_as_html(processed_files, html_path)
+                    print(f"[✓] HTML همراه هم ساخته شد: {html_path}")
+                except Exception as e:
+                    print(f"    [!] ساخت HTML همراه ناموفق: {e}")
+        except Exception as e:
+            print(f"[!] ساخت خروجی اصلی ناموفق: {e}", file=sys.stderr)
+            print(f"    تصاویر پردازش‌شده در کش مانده‌اند: {out_dir}", file=sys.stderr)
 
         
         if self.debug and debug_files:
