@@ -2696,6 +2696,7 @@ html, body { background: #0a0a0b; }
             image_files = self._stitch_pages_for_efficiency(image_files, stitch_dir)
 
         processed_files = []
+        debug_files = []
         skipped = 0
         page_ext = "." + self.img_format if self.img_format != "jpg" else ".jpg"
 
@@ -2705,6 +2706,13 @@ html, body { background: #0a0a0b; }
 
             if resume and os.path.isfile(out_file):
                 processed_files.append(out_file)
+                if self.debug:
+                    dbg_candidate = os.path.join(
+                        cache_dir, "debug",
+                        os.path.splitext(os.path.basename(out_file))[0] + "_debug.jpg"
+                    )
+                    if os.path.isfile(dbg_candidate):
+                        debug_files.append(dbg_candidate)
                 skipped += 1
                 continue
 
@@ -2730,6 +2738,7 @@ html, body { background: #0a0a0b; }
                 dbg_name = os.path.splitext(os.path.basename(out_file))[0] + "_debug.jpg"
                 dbg_path = os.path.join(debug_dir, dbg_name)
                 self._write_image(self._last_debug_image, dbg_path)
+                debug_files.append(dbg_path)
                 print(f"  [*] DEBUG ذخیره شد: {dbg_path}")
                 self._last_debug_image = None
 
@@ -2765,6 +2774,45 @@ html, body { background: #0a0a0b; }
                 print(f"[✓] HTML همراه هم ساخته شد: {html_path}")
             except Exception as e:
                 print(f"    [!] ساخت HTML همراه ناموفق: {e}")
+
+        if self.debug and debug_files:
+            stem, ext = os.path.splitext(output_path)
+            if not ext:
+                debug_out = output_path.rstrip("/\\") + "-debug"
+            else:
+                debug_out = f"{stem}-debug{ext}"
+
+            try:
+                if out_ext == ".pdf":
+                    self._save_as_pdf(debug_files, debug_out)
+                    print(f"[✓] PDF دیباگ ذخیره شد در: {debug_out}")
+                elif out_ext == ".html":
+                    self._save_as_html(debug_files, debug_out, title="دیباگ — حباب‌ها و OCR")
+                    print(f"[✓] HTML دیباگ ذخیره شد در: {debug_out}")
+                elif out_ext == ".zip":
+                    debug_zip_dir = os.path.join(cache_dir, "debug_out")
+                    os.makedirs(debug_zip_dir, exist_ok=True)
+                    for df in debug_files:
+                        shutil.copy(df, os.path.join(debug_zip_dir, os.path.basename(df)))
+                    self._save_as_zip(debug_zip_dir, debug_out)
+                    print(f"[✓] ZIP دیباگ ذخیره شد در: {debug_out}")
+                elif len(debug_files) == 1 and out_ext in IMAGE_EXTS:
+                    img = cv2.imread(debug_files[0])
+                    self._write_image(img, debug_out)
+                    print(f"[✓] تصویر دیباگ ذخیره شد در: {debug_out}")
+                else:
+                    os.makedirs(debug_out, exist_ok=True)
+                    for df in debug_files:
+                        shutil.copy(df, os.path.join(debug_out, os.path.basename(df)))
+                    print(f"[✓] {len(debug_files)} تصویر دیباگ در پوشه‌ی {debug_out} ذخیره شد.")
+                    html_dbg = debug_out.rstrip("/\\") + ".html"
+                    try:
+                        self._save_as_html(debug_files, html_dbg, title="دیباگ — حباب‌ها و OCR")
+                        print(f"[✓] HTML دیباگ همراه هم ساخته شد: {html_dbg}")
+                    except Exception as e:
+                        print(f"    [!] ساخت HTML دیباگ ناموفق: {e}")
+            except Exception as e:
+                print(f"[!] ساخت خروجی دیباگ ناموفق: {e}", file=sys.stderr)
 
 
 def build_arg_parser():
@@ -2812,7 +2860,8 @@ def build_arg_parser():
     p.add_argument("--inpaint-radius", type=int, default=3)
     p.add_argument("--temperature", type=float, default=0.85)
     p.add_argument("--debug", action="store_true",
-                   help="حالت دیباگ: مربع رنگی دور هر حباب روی تصویر (ذخیره در *.cache/debug/)")
+                   help="حالت دیباگ: مربع رنگی دور هر حباب + خروجی جداگانه با پسوند -debug "
+                        "(مثلاً aa-debug.pdf / aa-debug.html). تصاویر خام دیباگ هم در *.cache/debug/ ذخیره می‌شوند.")
     return p
 
 
