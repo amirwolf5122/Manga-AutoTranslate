@@ -3425,8 +3425,7 @@ def run_web():
             demo.load(js=dark_js)
         except Exception:
             pass
-
-    on_colab = "google.colab" in sys.modules or bool(os.environ.get("COLAB_RELEASE_TAG"))
+    on_colab = ("google.colab" in sys.modules or bool(os.environ.get("COLAB_RELEASE_TAG")))
     on_codespace = _detect_codespace()
     codespace_name = (os.environ.get("CODESPACE_NAME")
                       or _hostname_codespace_name() or "")
@@ -3443,6 +3442,7 @@ def run_web():
         server_name="0.0.0.0",
         server_port=int(os.environ.get("MANGA_APP_PORT", "7860")),
         share=on_colab or on_codespace or (not has_display()),
+        inline=on_colab,
         show_error=True,
         allowed_paths=[str(WORK_DIR), str(OUT_DIR), str(UPLOAD_DIR), str(FONT_DIR)],
         **launch_kw,
