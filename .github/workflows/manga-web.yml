@@ -40,35 +40,6 @@ jobs:
           curl -fL "https://raw.githubusercontent.com/rastikerdar/shabnam-font/master/dist/Shabnam-Bold.ttf" -o fonts/Shabnam-Bold.ttf
           ls -la fonts/
 
-      - name: Resolve API key
-        env:
-          GEMINI: ${{ secrets.GEMINI }}
-          OPENAI: ${{ secrets.OPENAI }}
-          DEEPSEEK: ${{ secrets.DEEPSEEK }}
-          GROQ: ${{ secrets.GROQ }}
-          XAI: ${{ secrets.XAI }}
-          OPENROUTER: ${{ secrets.OPENROUTER }}
-          TOGETHER: ${{ secrets.TOGETHER }}
-          API: ${{ secrets.API }}
-        run: |
-          PROVIDER="${{ inputs.provider }}"
-          KEY=""
-          case "$PROVIDER" in
-            gemini)     KEY="${GEMINI:-$API}" ;;
-            openai)     KEY="${OPENAI:-$API}" ;;
-            deepseek)   KEY="${DEEPSEEK:-$API}" ;;
-            groq)       KEY="${GROQ:-$API}" ;;
-            xai)        KEY="${XAI:-$API}" ;;
-            openrouter) KEY="${OPENROUTER:-$API}" ;;
-            together)   KEY="${TOGETHER:-$API}" ;;
-            *)          KEY="${API}" ;;
-          esac
-          if [ -z "$KEY" ]; then
-            echo "خطا: Secret برای provider «$PROVIDER» تنظیم نشده."
-            exit 1
-          fi
-          echo "RESOLVED_KEY=$KEY" >> $GITHUB_ENV
-          echo "PROVIDER=$PROVIDER" >> $GITHUB_ENV
 
       - name: Start Gradio web (auto shutdown)
         env:
