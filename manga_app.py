@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 
 APP_NAME = "مانگا مترجم"
-APP_VER = "1.4"
+APP_VER = "1.5"
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGA_PY = os.path.join(HERE, "manga.py")
 WORK_DIR = os.path.join(HERE, "workspace")
@@ -257,20 +257,48 @@ def smart_output_base(input_path: str) -> str:
     raw = (input_path or "").strip()
     if not raw:
         return "chapter_fa"
+    
+    if "," in raw:
+        raw = raw.split(",")[0].strip()
     is_url = raw.lower().startswith(("http://", "https://"))
     if is_url:
         from urllib.parse import urlparse, unquote
         path_u = unquote(urlparse(raw).path).strip("/")
-        parts = [p for p in path_u.split("/") if p]
+        parts = [p for p in path_u.split("/") if p and p != "*"]
         base = "chapter"
         if parts:
-            slug = parts[-1]
+            
+            while parts and (
+                parts[-1].startswith("*")
+                or re.search(r"(?i)\.(jpe?g|png|webp|gif|bmp)(\?.*)?$", parts[-1])
+                or re.fullmatch(r"\d+", parts[-1] or "")
+            ):
+                
+                if re.fullmatch(r"\d+", parts[-1] or ""):
+                    parts.pop()
+                    break
+                parts.pop()
+                if not parts:
+                    break
+            slug = parts[-1] if parts else "chapter"
+            
             m = re.search(
-                r"(.+?-chapter[-_]?(?:\d+|\*))(?:[-_].*)?$",
-                slug, flags=re.I,
+                r"(?i)(?:^|-)(chapter[-_]?\d+|ch[-_]?\d+|ep[-_]?\d+)$",
+                slug,
             )
             if m:
-                base = m.group(1)
+                
+                series = parts[-2] if len(parts) >= 2 else ""
+                ch = m.group(1)
+                base = f"{series}-{ch}" if series else ch
+            elif re.search(r"(?i)chapter[-_]?\d+", slug):
+                base = slug
+            elif any(re.search(r"(?i)^chapter[-_]?\d+$", p) for p in parts):
+                for p in parts:
+                    if re.search(r"(?i)^chapter[-_]?\d+$", p):
+                        series = parts[parts.index(p) - 1] if parts.index(p) > 0 else ""
+                        base = f"{series}-{p}" if series else p
+                        break
             elif "chapter" in [p.lower() for p in parts]:
                 low_parts = [p.lower() for p in parts]
                 try:
@@ -282,17 +310,15 @@ def smart_output_base(input_path: str) -> str:
                 except ValueError:
                     base = slug
             else:
-                if len(parts) >= 2:
-                    cand = "-".join(parts[-2:])
-                    base = cand if len(cand) >= 4 else slug
-                else:
-                    base = slug
+                base = slug if slug else "chapter"
         base = re.sub(r"\*+", "", base)
+        base = re.sub(r"(?i)\.(jpe?g|png|webp|gif|bmp)$", "", base)
         base = re.sub(r"[^\w\-.]+", "-", base)
         base = re.sub(r"-{2,}", "-", base).strip("-._") or "chapter"
     else:
         path_only = raw.rstrip("/\\")
         base = os.path.splitext(os.path.basename(path_only))[0] or "output"
+        base = re.sub(r"\*+", "", base)
         base = re.sub(r"[^\w\-.]+", "-", base).strip("-._") or "output"
     if not base.lower().endswith("_fa"):
         base = base + "_fa"
@@ -414,9 +440,9 @@ def run_cli_interactive():
         print(f"❌ مسیر پیدا نشد: {src}")
         return
 
-    print("\nقالب خروجی:  1) PDF   2) ZIP   3) HTML   4) پوشهٔ تصاویر")
-    f = input("انتخاب [1-4] (پیش‌فرض 1): ").strip() or "1"
-    ext = {"1": ".pdf", "2": ".zip", "3": ".html", "4": ""}.get(f, ".pdf")
+    print("\nقالب خروجی:  1) PDF   2) ZIP   3) HTML   4) پوشهٔ تصاویر   5) PSD")
+    f = input("انتخاب [1-5] (پیش‌فرض 1): ").strip() or "1"
+    ext = {"1": ".pdf", "2": ".zip", "3": ".html", "4": "", "5": ".psd"}.get(f, ".pdf")
 
     print("\nارائه‌دهندهٔ AI را انتخاب کنید:")
     prov_menu = [
@@ -606,12 +632,37 @@ def run_desktop():
     tab = ttk.Frame(nb)
     nb.add(tab, text="🚀 ترجمه")
 
+    tab_canvas = tk.Canvas(tab, bg=C_BG, highlightthickness=0)
+    tab_sb = ttk.Scrollbar(tab, orient="vertical", command=tab_canvas.yview)
+    tab_body = ttk.Frame(tab_canvas)
+    tab_body.bind("<Configure>",
+                  lambda e: tab_canvas.configure(scrollregion=tab_canvas.bbox("all")))
+    tab_win = tab_canvas.create_window((0, 0), window=tab_body, anchor="nw")
+    tab_canvas.configure(yscrollcommand=tab_sb.set)
+    tab_sb.pack(side="right", fill="y")
+    tab_canvas.pack(side="left", fill="both", expand=True)
+
+    def _tab_resize(e):
+        tab_canvas.itemconfigure(tab_win, width=max(300, e.width))
+    tab_canvas.bind("<Configure>", _tab_resize)
+
+    def _tab_wheel(e):
+        try:
+            if nb.index(nb.select()) != 0:
+                return
+        except Exception:
+            return
+        delta = getattr(e, "delta", 0) or 0
+        if delta:
+            tab_canvas.yview_scroll(int(-delta / 120), "units")
+    root.bind_all("<MouseWheel>", _tab_wheel)
+
     def field(parent, label):
         
         ttk.Label(parent, text=label, foreground=C_MUT).pack(fill="x", pady=(6, 2))
 
     
-    card_io = ttk.LabelFrame(tab, text=" ورودی / خروجی ", padding=12)
+    card_io = ttk.LabelFrame(tab_body, text=" ورودی / خروجی ", padding=12)
     card_io.pack(fill="x", padx=10, pady=(10, 6))
     field(card_io, "فایل / پوشه / URL ورودی")
     row_in = ttk.Frame(card_io); row_in.pack(fill="x")
@@ -630,14 +681,14 @@ def run_desktop():
     row_out = ttk.Frame(card_io); row_out.pack(fill="x", pady=(8, 0))
     fmt_var = tk.StringVar(value=cfg.get("out_fmt", "PDF"))
     ttk.Label(row_out, text="قالب:").pack(side="right", padx=(0, 4))
-    for v in ("PDF", "ZIP", "HTML", "پوشهٔ تصاویر"):
+    for v in ("PDF", "ZIP", "HTML", "PSD", "پوشهٔ تصاویر"):
         ttk.Radiobutton(row_out, text=v, value=v, variable=fmt_var).pack(side="right", padx=4)
     quality_var = tk.IntVar(value=int(cfg.get("quality", 92)))
     ttk.Label(row_out, text="کیفیت:").pack(side="left", padx=(0, 4))
     ttk.Spinbox(row_out, from_=60, to=100, textvariable=quality_var, width=5).pack(side="left")
 
     
-    card_ai = ttk.LabelFrame(tab, text=" حساب و مدل ", padding=12)
+    card_ai = ttk.LabelFrame(tab_body, text=" حساب و مدل ", padding=12)
     card_ai.pack(fill="x", padx=10, pady=6)
     row_ai1 = ttk.Frame(card_ai); row_ai1.pack(fill="x")
     prov_var = tk.StringVar(value=cfg.get("provider", "gemini"))
@@ -677,7 +728,7 @@ def run_desktop():
     model_var.trace_add("write", _schedule_api_save)
 
     
-    card_font = ttk.LabelFrame(tab, text=" فونت‌های لحن ", padding=10)
+    card_font = ttk.LabelFrame(tab_body, text=" فونت‌های لحن ", padding=10)
     card_font.pack(fill="x", padx=10, pady=6)
     font_vars = {"main": tk.StringVar(value=cfg.get("font") or find_font())}
     row_fm = ttk.Frame(card_font); row_fm.pack(fill="x")
@@ -701,18 +752,21 @@ def run_desktop():
         "letter": "نامه/طومار", "narrator": "راوی", "free_text": "متن آزاد",
     }
     font_slots = {}
+    tone_en_vars = {}
     for slot, fname, _desc, _urls in FONT_BUNDLES:
         dflt = os.path.join(FONT_DIR, fname) if os.path.isfile(os.path.join(FONT_DIR, fname)) else ""
         if dflt and not _font_persian_ok(dflt):
             dflt = ""
         font_slots[slot] = tk.StringVar(value=dflt)
+        tone_en_vars[slot] = tk.BooleanVar(value=bool(cfg.get("tone_en_" + slot, True)))
 
     def open_font_editor():
         win = tk.Toplevel(root)
         win.title("ویرایش فونت‌های لحن")
-        win.geometry("820x420")
+        win.geometry("880x480")
         win.configure(bg=C_BG)
-        tk.Label(win, text="مسیر هر فونت را عوض کنید یا با … انتخاب کنید",
+        tk.Label(win, text="مسیر هر فونت را عوض کنید یا با … انتخاب کنید؛ "
+                           "لحن خاموش = آن tone از ترجمه حذف و حباب‌ها با فونت اصلی رندر می‌شوند",
                  bg=C_BG, fg=C_MUT).pack(anchor="e", padx=12, pady=(10, 4))
         body = tk.Frame(win, bg=C_BG)
         body.pack(fill="both", expand=True, padx=12)
@@ -721,6 +775,8 @@ def run_desktop():
             cell = tk.Frame(body, bg=C_BG)
             cell.grid(row=r, column=(1 - c), sticky="ew", padx=4, pady=3)
             body.columnconfigure(1 - c, weight=1)
+            ttk.Checkbutton(cell, text="",
+                            variable=tone_en_vars[slot]).pack(side="left")
             tk.Label(cell, text=f"{SLOT_LABELS.get(slot, slot)}:",
                      bg=C_BG, fg=C_TXT).pack(side="right", padx=(0, 4))
             ttk.Entry(cell, textvariable=font_slots[slot]).pack(
@@ -747,7 +803,7 @@ def run_desktop():
                command=open_font_editor).pack(side="left", padx=6)
 
     
-    card_opt = ttk.LabelFrame(tab, text=" گزینه‌ها ", padding=12)
+    card_opt = ttk.LabelFrame(tab_body, text=" گزینه‌ها ", padding=12)
     card_opt.pack(fill="x", padx=10, pady=6)
     row4 = ttk.Frame(card_opt); row4.pack(fill="x")
     lama_var = tk.BooleanVar(value=False)
@@ -759,6 +815,12 @@ def run_desktop():
     ttk.Checkbutton(row4, text="اجبار CPU", variable=cpu_var).pack(side="right", padx=6)
     ttk.Checkbutton(row4, text="OCR دومرحله‌ای", variable=twopass_var).pack(side="right", padx=6)
     ttk.Checkbutton(row4, text="دیباگ", variable=debug_var).pack(side="right", padx=6)
+    fake_var = tk.BooleanVar(value=bool(cfg.get("fake_test", False)))
+    ttk.Checkbutton(row4, text="حالت تست — متن فارسی الکی (بدون API)",
+                    variable=fake_var).pack(side="right", padx=6)
+    clean_only_var = tk.BooleanVar(value=bool(cfg.get("clean_only", False)))
+    ttk.Checkbutton(row4, text="فقط پاکسازی (بدون ترجمه)",
+                    variable=clean_only_var).pack(side="right", padx=6)
     row5 = ttk.Frame(card_opt); row5.pack(fill="x", pady=(8, 0))
     workers_var = tk.IntVar(value=int(cfg.get("workers", 2)))
     bubbles_var = tk.IntVar(value=int(cfg.get("bubbles", 6)))
@@ -797,7 +859,6 @@ def run_desktop():
     ttk.Combobox(row5b, textvariable=readord_var, values=["rtl", "ltr"],
                  state="readonly", width=5).pack(side="right")
 
-    # واژه‌نامه + بریف داستان
     row5c = ttk.Frame(adv); row5c.pack(fill="x", pady=(6, 0))
     brief_var = tk.BooleanVar(value=bool(cfg.get("story_brief", True)))
     ttk.Label(row5c, text="واژه‌نامهٔ اسامی (هر خط: English=فارسی):").pack(anchor="e")
@@ -806,9 +867,14 @@ def run_desktop():
     glos_txt.insert("1.0", str(cfg.get("glossary_text", "") or ""))
     ttk.Checkbutton(row5c, text="بریف داستان قبل از ترجمه (لحن شخصیت‌ها حفظ شود)",
                     variable=brief_var).pack(anchor="e")
+    ttk.Label(adv, text="متن دستور مترجم — جایگزین کامل متن داخل کد می‌شود (خالی = پیش‌فرض):"
+              ).pack(anchor="e", pady=(8, 0))
+    instr_txt = tk.Text(adv, height=6, font=("Consolas", 10), bg=C_CARD, fg=C_TXT)
+    instr_txt.pack(fill="x", pady=(2, 4))
+    instr_txt.insert("1.0", str(cfg.get("instruction_text", "") or ""))
 
     
-    row6 = ttk.Frame(tab); row6.pack(fill="x", padx=10, pady=(4, 2))
+    row6 = ttk.Frame(tab_body); row6.pack(fill="x", padx=10, pady=(4, 2))
     run_btn = ttk.Button(row6, text="🚀  شروع ترجمه", style="Accent.TButton")
     run_btn.pack(side="right")
     stop_btn = ttk.Button(row6, text="⏹ توقف", state="disabled")
@@ -818,8 +884,41 @@ def run_desktop():
     read_btn.pack(side="left")
     open_btn = ttk.Button(row6, text="📂 خروجی", state="disabled")
     open_btn.pack(side="left")
-    out_path_holder = {"p": "", "d": ""}
-    progress = ttk.Progressbar(tab, mode="indeterminate")
+    read_dbg_btn = ttk.Button(row6, text="🔍 خواندن دیباگ", state="disabled",
+                              command=lambda: open_reader(debug=True))
+    open_dbg_btn = ttk.Button(row6, text="📂 دیباگ", state="disabled")
+    
+    out_path_holder = {"p": "", "d": "", "dbg_p": "", "dbg_d": ""}
+
+    def _sync_debug_btns(*_a):
+        try:
+            on = bool(debug_var.get())
+        except Exception:
+            on = False
+        if on:
+            if not read_dbg_btn.winfo_ismapped():
+                read_dbg_btn.pack(side="left", padx=(6, 0), after=open_btn)
+            if not open_dbg_btn.winfo_ismapped():
+                open_dbg_btn.pack(side="left", padx=(4, 0), after=read_dbg_btn)
+        else:
+            try:
+                read_dbg_btn.pack_forget()
+            except Exception:
+                pass
+            try:
+                open_dbg_btn.pack_forget()
+            except Exception:
+                pass
+
+    try:
+        debug_var.trace_add("write", _sync_debug_btns)
+    except Exception:
+        try:
+            debug_var.trace("w", lambda *_: _sync_debug_btns())
+        except Exception:
+            pass
+    root.after(50, _sync_debug_btns)
+    progress = ttk.Progressbar(tab_body, mode="indeterminate")
 
     
     tab_log = ttk.Frame(nb)
@@ -866,24 +965,31 @@ def run_desktop():
     copy_btn.config(command=copy_log)
 
     
-    def open_reader():
-        d = out_path_holder.get("d")
+    def open_reader(debug=False):
+        d = out_path_holder.get("dbg_d" if debug else "d")
         files = []
         if d and os.path.isdir(d):
             for f in sorted(os.listdir(d)):
                 if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg", ".bmp")):
                     files.append(os.path.join(d, f))
-        p = out_path_holder.get("p")
+        p = out_path_holder.get("dbg_p" if debug else "p")
         if not files and p and os.path.isfile(p) and \
                 p.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
             files = [p]
+        if not files and p and os.path.isfile(p) and p.lower().endswith(".pdf"):
+            open_path(p)
+            return
         if not files:
-            messagebox.showinfo(
-                "خواندن", "فایل تصویری برای نمایش پیدا نشد.\n"
-                "برای حالت خواندن، خروجی را ZIP یا «پوشهٔ تصاویر» بگیرید (PDF صفحه‌تصویری ندارد).")
+            if debug:
+                messagebox.showinfo("خواندن دیباگ",
+                    "خروجی دیباگ پیدا نشد (_debug.pdf یا پوشه debug).")
+            else:
+                messagebox.showinfo(
+                    "خواندن", "فایل تصویری برای نمایش پیدا نشد.\n"
+                    "برای حالت خواندن، خروجی را ZIP یا «پوشهٔ تصاویر» بگیرید (PDF صفحه‌تصویری ندارد).")
             return
         win = tk.Toplevel(root)
-        win.title("📖 حالت خواندن")
+        win.title("🔍 خواندن دیباگ" if debug else "📖 حالت خواندن")
         win.geometry("920x860")
         win.configure(bg="#0a0f1c")
 
@@ -1032,6 +1138,16 @@ def run_desktop():
                     read_btn.config(state="normal")
                 elif kind == "reader_dir":
                     out_path_holder["d"] = payload
+                elif kind == "debug_done":
+                    out_path_holder["dbg_p"] = payload or ""
+                    if payload:
+                        open_dbg_btn.config(state="normal")
+                        read_dbg_btn.config(state="normal")
+                elif kind == "debug_dir":
+                    out_path_holder["dbg_d"] = payload or ""
+                    if payload:
+                        open_dbg_btn.config(state="normal")
+                        read_dbg_btn.config(state="normal")
                 elif kind == "fonts_done":
                     dl_btn.config(state="normal")
                     font_vars["main"].set(find_font())
@@ -1058,6 +1174,16 @@ def run_desktop():
     def on_open():
         p = out_path_holder.get("p")
         if p:
+            open_path(os.path.dirname(p) or p)
+
+    def on_open_debug():
+        p = out_path_holder.get("dbg_p")
+        d = out_path_holder.get("dbg_d")
+        if p and os.path.isfile(p):
+            open_path(p)
+        elif d and os.path.isdir(d):
+            open_path(d)
+        elif p:
             open_path(os.path.dirname(p) or p)
 
     def worker(src, out_v, cmd):
@@ -1090,14 +1216,67 @@ def run_desktop():
             q.put(("status", ("موفق ✅", C_OK)))
             q.put(("done", target))
             
-            cands = [out_v, out_v + ".cache" + os.sep + "out",
-                     os.path.join(out_v + ".cache", "out")]
+            cands = [
+                out_v if os.path.isdir(out_v) else "",
+                os.path.join(out_v + ".cache", "out"),
+                os.path.join(out_v + ".cache", "debug"),
+            ]
+            parent = os.path.dirname(out_v) or "."
+            try:
+                for name in os.listdir(parent):
+                    if name.endswith(".cache"):
+                        cands.append(os.path.join(parent, name, "out"))
+                        cands.append(os.path.join(parent, name, "debug"))
+            except Exception:
+                pass
             rd = ""
             for c in cands:
-                if os.path.isdir(c):
-                    rd = c
-                    break
+                if c and os.path.isdir(c):
+                    try:
+                        if any(f.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))
+                               for f in os.listdir(c)):
+                            rd = c
+                            break
+                    except Exception:
+                        pass
+            
+            if not rd and os.path.isfile(out_v) and out_v.lower().endswith(".pdf"):
+                rd = out_v
             q.put(("reader_dir", rd))
+
+            
+            dbg_pdf = os.path.splitext(str(out_v))[0] + "_debug.pdf"
+            dbg_dir = ""
+            dbg_file = ""
+            if os.path.isfile(dbg_pdf):
+                dbg_file = dbg_pdf
+            dbg_cands = [
+                os.path.join(str(out_v) + ".cache", "debug"),
+            ]
+            try:
+                for name in os.listdir(parent):
+                    if name.endswith(".cache"):
+                        dbg_cands.append(os.path.join(parent, name, "debug"))
+            except Exception:
+                pass
+            for c in dbg_cands:
+                if c and os.path.isdir(c):
+                    try:
+                        if any(f.lower().endswith((".webp", ".png", ".jpg", ".jpeg"))
+                               for f in os.listdir(c)):
+                            dbg_dir = c
+                            break
+                    except Exception:
+                        pass
+            if dbg_file or dbg_dir:
+                q.put(("log", f"🔍 دیباگ آماده: {dbg_file or dbg_dir}"))
+            if dbg_file:
+                q.put(("debug_done", dbg_file))
+            if dbg_dir:
+                q.put(("debug_dir", dbg_dir))
+            elif dbg_file:
+                
+                q.put(("debug_dir", ""))
         q.put(("finished", None))
 
     def on_run():
@@ -1113,7 +1292,7 @@ def run_desktop():
             messagebox.showerror(APP_NAME, "فونت اصلی معتبر پیدا نشد.")
             return
 
-        ext = {"PDF": ".pdf", "ZIP": ".zip", "HTML": ".html", "پوشهٔ تصاویر": ""}[fmt_var.get()]
+        ext = {"PDF": ".pdf", "ZIP": ".zip", "HTML": ".html", "PSD": ".psd", "پوشهٔ تصاویر": ""}[fmt_var.get()]
         out_v = os.path.join(OUT_DIR, smart_output_base(src) + ext)
 
         save_config({"last_input": src, "out_fmt": fmt_var.get(),
@@ -1126,7 +1305,11 @@ def run_desktop():
                      "request_delay": reqdelay_var.get(), "temperature": temp_var.get(),
                      "reading_order": readord_var.get(),
                      "story_brief": brief_var.get(),
+                     "fake_test": fake_var.get(),
+                     "instruction_text": instr_txt.get("1.0", "end").rstrip(),
                      "glossary_text": glos_txt.get("1.0", "end").rstrip()})
+        for _slot, _en in tone_en_vars.items():
+            save_config({**load_config(), "tone_en_" + _slot: _en.get()})
 
         cmd = [sys.executable, MANGA_PY, "-i", src, "-o", out_v, "--font", font_v,
                "--provider", prov_var.get(),
@@ -1142,6 +1325,8 @@ def run_desktop():
         
         cli_font = {"free_text": "free"}
         for slot, var in font_slots.items():
+            if not tone_en_vars.get(slot, tk.BooleanVar(value=True)).get():
+                continue
             pv = var.get().strip()
             if pv and os.path.isfile(pv):
                 cmd += ["--font-" + cli_font.get(slot, slot.replace("_", "-")), pv]
@@ -1166,6 +1351,16 @@ def run_desktop():
             cmd += ["--glossary", glos_path]
         if not brief_var.get():
             cmd += ["--no-brief"]
+        if fake_var.get():
+            cmd += ["--fake-translate"]
+        if clean_only_var.get():
+            cmd += ["--clean-only"]
+        instr_text = instr_txt.get("1.0", "end").strip()
+        if instr_text:
+            instr_path = os.path.join(OUT_DIR, "instruction_user.txt")
+            with open(instr_path, "w", encoding="utf-8") as _inf:
+                _inf.write(instr_text + "\n")
+            cmd += ["--instruction", instr_path]
 
         log_box.config(state="normal")
         log_box.delete("1.0", "end")
@@ -1175,6 +1370,10 @@ def run_desktop():
         stop_btn.config(state="normal")
         open_btn.config(state="disabled")
         read_btn.config(state="disabled")
+        open_dbg_btn.config(state="disabled")
+        read_dbg_btn.config(state="disabled")
+        out_path_holder["dbg_p"] = ""
+        out_path_holder["dbg_d"] = ""
         set_status("در حال اجرا…", ACCENT)
         progress.pack(fill="x", padx=10, pady=(0, 6))
         progress.start(12)
@@ -1183,6 +1382,7 @@ def run_desktop():
     run_btn.config(command=on_run)
     stop_btn.config(command=on_stop)
     open_btn.config(command=on_open)
+    open_dbg_btn.config(command=on_open_debug)
     poll_queue()
 
     
@@ -1883,7 +2083,7 @@ def run_web():
         with gr.Group(elem_classes=["stepcard"]):
             gr.HTML('<div class="steptitle"><span class="stepnum">۳</span> خروجی</div>')
             with gr.Row():
-                out_fmt = gr.Radio(["PDF", "ZIP", "HTML", "پوشهٔ تصاویر"],
+                out_fmt = gr.Radio(["PDF", "ZIP", "HTML", "PSD", "پوشهٔ تصاویر"],
                                    value=cfg.get("out_fmt", "PDF"), label="قالب")
                 quality = gr.Slider(60, 100, value=int(cfg.get("quality", 92)),
                                     step=1, label="کیفیت تصویر")
@@ -1894,7 +2094,9 @@ def run_web():
                                   file_count="single", type="filepath",
                                   file_types=[".ttf", ".otf"],
                                   elem_classes=["compact-upload"])
-            gr.Markdown("<div class='hint'>هر فونت لحن را جدا آپلود کنید؛ خالی = فونت سرور</div>")
+            gr.Markdown("<div class='hint'>هر فونت لحن را جدا آپلود کنید؛ خالی = فونت سرور. "
+                        "با سوییچ کنار هر لحن، آن فونت/لحن را فعال یا غیرفعال کن — "
+                        "لحن غیرفعال حذف می‌شود و حباب‌ها با فونت اصلی رندر می‌شوند.</div>")
             SLOT_LABELS = {
                 "normal": "کودک (عادی)", "shout": "افسانه (خشم)",
                 "comedy_shout": "کروش (کمدی)", "whisper": "زمزمه",
@@ -1903,6 +2105,7 @@ def run_web():
             }
             tone_uploads = []
             tone_slots = []
+            tone_enables = []
             with gr.Row():
                 col1 = gr.Column()
                 col2 = gr.Column()
@@ -1917,8 +2120,16 @@ def run_web():
                                      file_count="single", type="filepath",
                                      file_types=[".ttf", ".otf"],
                                      elem_classes=["compact-upload"])
+                        en = gr.Checkbox(label=f"فعال: {SLOT_LABELS.get(slot, slot)}",
+                                         value=True)
                         tone_uploads.append(up)
                         tone_slots.append(slot)
+                        tone_enables.append(en)
+                        try:
+                            en.change(lambda v, u=up: gr.update(visible=bool(v)),
+                                      inputs=[en], outputs=[up])
+                        except Exception:
+                            pass
 
         with gr.Accordion("⚙️ تنظیمات پیشرفته", open=False):
             with gr.Row():
@@ -1946,10 +2157,26 @@ def run_web():
                 force_cpu = gr.Checkbox(label="اجبار CPU (خالی = GPU اگر بود)",
                                         value=False)
                 two_pass = gr.Checkbox(label="OCR دومرحله‌ای", value=True)
+            with gr.Row():
+                fake_test = gr.Checkbox(label="حالت تست — متن فارسی الکی (بدون API)",
+                                        value=bool(cfg.get("fake_test", False)))
+                clean_only = gr.Checkbox(
+                    label="فقط پاکسازی بدون ترجمه (بدون API — تست تشخیص/inpaint)",
+                    value=bool(cfg.get("clean_only", False)))
+                web_debug = gr.Checkbox(label="حالت دیباگ (مربع رنگی دور هر حباب)",
+                                        value=bool(cfg.get("web_debug", False)))
             glossary_text = gr.Textbox(
                 label="واژه‌نامهٔ اسامی و اصطلاحات (هر خط: English=فارسی)",
                 placeholder="Raphdonia=رافدونیا\nBarbarian=باربارین",
                 lines=3, value=str(cfg.get("glossary_text", "") or ""))
+            gr.Markdown("<div class='hint'><b>🧠 متن دستور مترجم:</b> متن زیر جایگزین کامل "
+                        "<code>_get_system_instruction</code> داخل کد می‌شود؛ خالی = پیش‌فرض کد. "
+                        "(tone حباب‌ها جداگانه توسط AI انتخاب می‌شود و به این متن ربطی ندارد)</div>")
+            instruction_text = gr.Textbox(
+                label="System Instruction مترجم",
+                lines=8, max_lines=25,
+                value=str(cfg.get("instruction_text", "") or ""),
+                placeholder="خالی = متن پیش‌فرض داخل کد …")
             story_brief = gr.Checkbox(
                 label="بریف داستان قبل از ترجمه (AI یک‌بار فصل را می‌خواند تا لحن شخصیت‌ها حفظ شود)",
                 value=bool(cfg.get("story_brief", True)))
@@ -2043,11 +2270,16 @@ def run_web():
                         "log": (job.get("log") or "")[-24000:],
                         "ts": job.get("ts") or time.time(),
                         "download_path": job.get("download_path"),
+                        "download_debug": job.get("download_debug"),
                         "result_visible": bool(job.get("result_visible")),
                         "returncode": job.get("returncode"),
                         "out_v": job.get("out_v"),
                         "src": str(job.get("src") or "")[:500],
                         "reader_path": job.get("reader_path"),
+                        "reader_debug_path": job.get("reader_debug_path"),
+                        "html_debug": (job.get("html_debug") or "")[:500] and True,  # flag only
+                        "has_debug": bool(job.get("download_debug") or job.get("reader_debug_path")),
+                        "want_debug": bool(job.get("want_debug")),
                     }
                 path = os.path.join(SESS_DIR, f"{sid}.json")
                 with open(path, "w", encoding="utf-8") as f:
@@ -2086,6 +2318,12 @@ def run_web():
                         j["html_state"] = meta.get("html_state")
                     if meta.get("reader_path"):
                         j["reader_path"] = meta.get("reader_path")
+                    if meta.get("reader_debug_path"):
+                        j["reader_debug_path"] = meta.get("reader_debug_path")
+                    if meta.get("download_debug"):
+                        j["download_debug"] = meta.get("download_debug")
+                    if meta.get("want_debug"):
+                        j["want_debug"] = meta.get("want_debug")
                     j["ts"] = meta.get("ts") or time.time()
                     j["out_v"] = meta.get("out_v")
                     j["src"] = meta.get("src")
@@ -2120,22 +2358,116 @@ def run_web():
                 })
             except Exception:
                 pass
-            img_dir = out_v if os.path.isdir(out_v) else os.path.join(str(out_v) + ".cache", "out")
-            imgs = []
-            try:
-                if os.path.isdir(img_dir):
-                    for f in sorted(os.listdir(img_dir), key=natural_key):
+            def _collect_imgs(root_paths):
+                found = []
+                seen = set()
+                for root in root_paths:
+                    if not root:
+                        continue
+                    if os.path.isfile(root) and root.lower().endswith(
+                        (".webp", ".png", ".jpg", ".jpeg")
+                    ):
+                        if root not in seen:
+                            seen.add(root)
+                            found.append(root)
+                        continue
+                    if not os.path.isdir(root):
+                        continue
+                    try:
+                        names = sorted(os.listdir(root), key=natural_key)
+                    except Exception:
+                        continue
+                    for f in names:
                         if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
-                            imgs.append(os.path.join(img_dir, f))
-                if not imgs and str(target).lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
-                    imgs = [target]
+                            p = os.path.join(root, f)
+                            if p not in seen:
+                                seen.add(p)
+                                found.append(p)
+                return found
+
+            def _pdf_to_reader_imgs(pdf_path, dest_dir, limit=80):
+                
+                try:
+                    import fitz
+                except ImportError:
+                    try:
+                        subprocess.check_call(
+                            [sys.executable, "-m", "pip", "install", "-q", "pymupdf"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+                        import fitz
+                    except Exception:
+                        return []
+                os.makedirs(dest_dir, exist_ok=True)
+                out = []
+                try:
+                    doc = fitz.open(pdf_path)
+                    zoom = 120 / 72.0
+                    mat = fitz.Matrix(zoom, zoom)
+                    for i, page in enumerate(doc):
+                        if i >= limit:
+                            break
+                        pix = page.get_pixmap(matrix=mat)
+                        fp = os.path.join(dest_dir, f"view_{i+1:03d}.jpg")
+                        pix.save(fp)
+                        out.append(fp)
+                    doc.close()
+                except Exception as e:
+                    print(f"[!] استخراج PDF برای نمایشگر: {e}")
+                return out
+
+            parent = os.path.dirname(str(out_v)) or "."
+            cache_out = os.path.join(str(out_v) + ".cache", "out")
+            cache_debug = os.path.join(str(out_v) + ".cache", "debug")
+            search_dirs = [
+                out_v if os.path.isdir(out_v) else None,
+                cache_out,
+                cache_debug,
+            ]
+            
+            try:
+                for name in os.listdir(parent):
+                    if name.endswith(".cache"):
+                        search_dirs.append(os.path.join(parent, name, "out"))
+                        search_dirs.append(os.path.join(parent, name, "debug"))
             except Exception:
                 pass
+
+            imgs = _collect_imgs(search_dirs)
+            if not imgs and str(target).lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
+                imgs = [target]
+
+            
+            pdf_for_view = None
+            if not imgs:
+                for cand in (out_v, target):
+                    if cand and str(cand).lower().endswith(".pdf") and os.path.isfile(cand):
+                        pdf_for_view = cand
+                        break
+            debug_pdf = os.path.splitext(str(out_v))[0] + "_debug.pdf"
+            debug_imgs = []
+            if os.path.isfile(debug_pdf):
+                dbg_dir = os.path.join(parent, "_debug_view")
+                debug_imgs = _pdf_to_reader_imgs(debug_pdf, dbg_dir)
+            if pdf_for_view and not imgs:
+                view_dir = os.path.join(parent, "_pdf_view")
+                imgs = _pdf_to_reader_imgs(pdf_for_view, view_dir)
+
+            
+            if not debug_imgs:
+                debug_imgs = _collect_imgs([cache_debug])
+
             try:
                 reader_html = build_reader_html(imgs, standalone=True)
             except Exception:
                 reader_html = ""
+            try:
+                debug_reader_html = build_reader_html(debug_imgs, standalone=True) if debug_imgs else ""
+            except Exception:
+                debug_reader_html = ""
+
             reader_path = None
+            debug_reader_path = None
             try:
                 base_dir = out_v if os.path.isdir(out_v) else os.path.dirname(str(out_v))
                 if not base_dir or not os.path.isdir(base_dir):
@@ -2144,15 +2476,41 @@ def run_web():
                 reader_path = os.path.join(base_dir, "reader.html")
                 with open(reader_path, "w", encoding="utf-8") as rf:
                     rf.write(reader_html or "")
+                if debug_reader_html:
+                    debug_reader_path = os.path.join(base_dir, "reader_debug.html")
+                    with open(debug_reader_path, "w", encoding="utf-8") as rf:
+                        rf.write(debug_reader_html)
             except Exception as e:
                 print(f"[!] ذخیره reader.html ناموفق: {e}")
                 reader_path = None
-            final_log = "\n".join(buf[-120:]) + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند"
+
+            
+            download_debug = debug_pdf if os.path.isfile(debug_pdf) else None
+            if not download_debug and debug_imgs:
+                try:
+                    import zipfile
+                    zpath = os.path.join(parent, os.path.splitext(os.path.basename(str(out_v)))[0] + "_debug_imgs.zip")
+                    with zipfile.ZipFile(zpath, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+                        for p in debug_imgs:
+                            zf.write(p, arcname=os.path.basename(p))
+                    download_debug = zpath
+                except Exception:
+                    download_debug = None
+
+            extra = ""
+            if not imgs:
+                extra = "\n⚠ تصاویر برای نمایشگر پیدا نشد — فقط دانلود فعال است."
+            if debug_imgs or download_debug:
+                extra += f"\n🔍 دیباگ: {len(debug_imgs)} صفحه آماده نمایش/دانلود"
+            final_log = "\n".join(buf[-120:]) + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند" + extra
             with job["lock"]:
                 job["log"] = final_log
                 job["download_path"] = target
+                job["download_debug"] = download_debug
                 job["html_state"] = reader_html
+                job["html_debug"] = debug_reader_html
                 job["reader_path"] = reader_path
+                job["reader_debug_path"] = debug_reader_path
                 job["result_visible"] = True
                 job["ts"] = time.time()
             _persist_job_meta(sid)
@@ -2284,11 +2642,16 @@ def run_web():
                             value="— لاگ بعد از شروع ترجمه اینجا می‌آید —")
 
         html_state = gr.State("")
+        html_debug_state = gr.State("")
         with gr.Group(elem_classes=["stepcard"], visible=False) as result_group:
             gr.HTML('<div class="steptitle"><span class="stepnum">✓</span> نتیجه — نمایش یا دانلود</div>')
             with gr.Row():
                 btn_view = _safe(gr.Button, "👁 نمایش", visible=False)
                 dl_btn = _safe(gr.DownloadButton, label="⬇ دانلود", visible=False)
+            debug_row = gr.Row(visible=False)
+            with debug_row:
+                btn_view_debug = _safe(gr.Button, "🔍 نمایش دیباگ", visible=False)
+                dl_btn_debug = _safe(gr.DownloadButton, label="⬇ دانلود دیباگ", visible=False)
             viewer_html = gr.HTML(visible=False, elem_id="reader_wrap")
 
         LS_KEY = "manga_autotranslate_form_v2"
@@ -2296,7 +2659,7 @@ def run_web():
         browser_form_json = gr.State("")
 
         save_form_js = f"""
-(sid, sidBox, inp, prov, keys, model, fmt, qual, workers, bubbles, timeout, batchw, maxre, reqdelay, temp, readord, lama, cpu, twopass) => {{
+(sid, sidBox, inp, prov, keys, model, fmt, qual, workers, bubbles, timeout, batchw, maxre, reqdelay, temp, readord, lama, cpu, twopass, fake) => {{
   try {{
     const realSid = (sid || sidBox || "").toString().trim();
     const data = {{
@@ -2318,6 +2681,7 @@ def run_web():
       lama: !!lama,
       cpu: !!cpu,
       twopass: twopass === null || twopass === undefined ? true : !!twopass,
+      fake_test: !!fake,
       ts: Date.now()
     }};
     localStorage.setItem("{LS_KEY}", JSON.stringify(data));
@@ -2672,16 +3036,21 @@ def run_web():
                             workers_v, bubbles_v, timeout_v,
                             batchw_v, maxre_v, reqdelay_v, temp_v, readord_v,
                             use_lama_v, force_cpu_v, two_pass_v,
+                            fake_test_v, clean_only_v, web_debug_v, instruction_text_v,
                             glossary_text_v, story_brief_v,
-                            *tone_files):
+                            *tone_args):
             sid = (sid or sid_box_v or "").strip()
             sid = _find_active_sid(sid) or sid
             if not sid:
                 sid = _new_sid()
 
             job = _get_job(sid)
+            n_slots = len(tone_slots)
+            tone_files = list(tone_args[:n_slots])
+            tone_enables = list(tone_args[n_slots:n_slots * 2])
 
-            def _pack(btn, log, dl=None, view=None, group=None, viewer=None, html=""):
+            def _pack(btn, log, dl=None, view=None, group=None, viewer=None, html="",
+                      dl_dbg=None, view_dbg=None, dbg_row=None, html_dbg=""):
                 return (
                     sid,
                     gr.update(value=sid),
@@ -2692,6 +3061,10 @@ def run_web():
                     group if group is not None else gr.update(),
                     viewer if viewer is not None else gr.update(),
                     html if html is not None else gr.update(),
+                    dl_dbg if dl_dbg is not None else gr.update(),
+                    view_dbg if view_dbg is not None else gr.update(),
+                    dbg_row if dbg_row is not None else gr.update(),
+                    html_dbg if html_dbg is not None else gr.update(),
                 )
 
             with job["lock"]:
@@ -2701,7 +3074,6 @@ def run_web():
                 msg = job.get("log") or "⏹ ترجمه متوقف شد.\n(پروسه manga.py بسته شد)"
                 return _pack("🚀  شروع ترجمه", msg)
 
-            tone_map = dict(zip(tone_slots, tone_files))
             src = upload or (inp_path_v or "").strip()
 
             if not src:
@@ -2713,7 +3085,7 @@ def run_web():
                 return _pack("🚀  شروع ترجمه",
                              "❌ فونت فارسی روی سرور نیست — یک .ttf آپلود کنید.")
 
-            ext = {"PDF": ".pdf", "ZIP": ".zip", "HTML": ".html", "پوشهٔ تصاویر": ""}[out_fmt_v]
+            ext = {"PDF": ".pdf", "ZIP": ".zip", "HTML": ".html", "PSD": ".psd", "پوشهٔ تصاویر": ""}[out_fmt_v]
             base = smart_output_base(str(src))
             user_out_dir = os.path.join(OUT_DIR, sid[:12])
             os.makedirs(user_out_dir, exist_ok=True)
@@ -2732,9 +3104,21 @@ def run_web():
                    "--temperature", str(float(temp_v)),
                    "--reading-order", str(readord_v)]
             cmd += font_args()
-            for slot, fp in tone_map.items():
+            for si, slot in enumerate(tone_slots):
+                fp = tone_files[si] if si < len(tone_files) else None
+                en = tone_enables[si] if si < len(tone_enables) else True
+                if not en:
+                    continue
+                if not fp:
+                    bundle = next((b for b in FONT_BUNDLES if b[0] == slot), None)
+                    if bundle:
+                        srv = os.path.join(FONT_DIR, bundle[1])
+                        if os.path.isfile(srv):
+                            fp = srv
                 if fp and os.path.isfile(fp):
-                    cmd += ["--font-" + slot.replace("_", "-"), fp]
+                    
+                    _cli = {"free_text": "free"}
+                    cmd += ["--font-" + _cli.get(slot, slot.replace("_", "-")), fp]
             klist = [k.strip() for k in (api_keys_v or "").replace(";", ",").split(",") if k.strip()]
             if klist:
                 cmd += ["--api-key", ",".join(klist)]
@@ -2746,6 +3130,18 @@ def run_web():
                 cmd += ["--cpu"]
             if not two_pass_v:
                 cmd += ["--no-two-pass-ocr"]
+            if fake_test_v:
+                cmd += ["--fake-translate"]
+            if clean_only_v:
+                cmd += ["--clean-only"]
+            if web_debug_v:
+                cmd += ["--debug"]
+            instr_text = str(instruction_text_v or "").strip()
+            if instr_text:
+                instr_path = os.path.join(user_out_dir, "instruction_user.txt")
+                with open(instr_path, "w", encoding="utf-8") as _inf:
+                    _inf.write(instr_text + "\n")
+                cmd += ["--instruction", instr_path]
             glos_text = str(glossary_text_v or "").strip()
             if glos_text:
                 glos_path = os.path.join(user_out_dir, "glossary_user.txt")
@@ -2759,7 +3155,11 @@ def run_web():
             with job["lock"]:
                 job["result_visible"] = False
                 job["download_path"] = None
+                job["download_debug"] = None
                 job["html_state"] = ""
+                job["html_debug"] = ""
+                job["reader_path"] = None
+                job["reader_debug_path"] = None
                 job["buf"] = []
                 job["t0"] = t0
                 job["returncode"] = None
@@ -2795,7 +3195,15 @@ def run_web():
             _persist_job_meta(sid)
             _start_job_reader(sid, proc, t0)
 
-            return _pack("⏹  متوقف ترجمه", job["log"])
+            return _pack(
+                "⏹  متوقف ترجمه", job["log"],
+                dl=gr.update(visible=False),
+                view=gr.update(visible=False),
+                group=gr.update(visible=False),
+                dl_dbg=gr.update(visible=False),
+                view_dbg=gr.update(visible=False),
+                dbg_row=gr.update(visible=False),
+            )
 
         _click_kw = dict(
             inputs=[session_id, sid_box, inp_path, inp_upload, provider, api_keys, model,
@@ -2803,8 +3211,10 @@ def run_web():
                     workers, bubbles, timeout,
                     batchw, maxre, reqdelay, temp, readord,
                     use_lama, force_cpu, two_pass,
-                    glossary_text, story_brief] + tone_uploads,
-            outputs=[session_id, sid_box, run_btn, log_box, dl_btn, btn_view, result_group, viewer_html, html_state],
+                    fake_test, clean_only, web_debug, instruction_text,
+                    glossary_text, story_brief] + tone_uploads + tone_enables,
+            outputs=[session_id, sid_box, run_btn, log_box, dl_btn, btn_view, result_group, viewer_html, html_state,
+                     dl_btn_debug, btn_view_debug, debug_row, html_debug_state],
             concurrency_limit=8,
         )
         try:
@@ -2818,7 +3228,7 @@ def run_web():
         _save_inputs = [
             session_id, sid_box, inp_path, provider, api_keys, model, out_fmt, quality,
             workers, bubbles, timeout, batchw, maxre, reqdelay, temp, readord,
-            use_lama, force_cpu, two_pass,
+            use_lama, force_cpu, two_pass, fake_test,
         ]
 
         try:
@@ -2849,7 +3259,7 @@ def run_web():
                 except Exception:
                     pass
         for _comp in (quality, workers, bubbles, timeout, batchw, maxre, reqdelay, temp, readord,
-                      use_lama, force_cpu, two_pass):
+                      use_lama, force_cpu, two_pass, fake_test, clean_only):
             try:
                 _comp.change(fn=None, inputs=_save_inputs, outputs=[], js=save_form_js)
             except Exception:
@@ -2877,6 +3287,7 @@ def run_web():
                     gr.update(), gr.update(), gr.update(), gr.update(),
                     gr.update(), gr.update(), gr.update(), gr.update(), gr.update(),
                     gr.update(), gr.update(), gr.update(),
+                    gr.update(),
                 )
             job = _get_job(sid)
             meta = _load_job_meta(sid) if sid else {}
@@ -2987,13 +3398,15 @@ def run_web():
                 u_bool("lama"),
                 u_bool("cpu"),
                 u_bool("twopass"),
+                u_bool("fake_test"),
+                u_bool("clean_only"),
             )
 
         _restore_outputs = [
             session_id, sid_box, run_btn, log_box, dl_btn, btn_view, result_group, viewer_html, html_state,
             inp_path, provider, api_keys, model, out_fmt, quality,
             workers, bubbles, timeout, batchw, maxre, reqdelay, temp, readord,
-            use_lama, force_cpu, two_pass,
+            use_lama, force_cpu, two_pass, fake_test,
         ]
 
         try:
@@ -3025,8 +3438,7 @@ def run_web():
             def _on_load_fallback(sid, sid_box_v):
                 preferred = (sid or sid_box_v or "").strip()
                 if not preferred:
-                    return (gr.update(), gr.update(), gr.update(), gr.update(),
-                            gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
+                    return (gr.update(),) * 13
                 sid = _find_active_sid(preferred) or preferred
                 job = _get_job(sid)
                 meta = _load_job_meta(sid)
@@ -3039,21 +3451,25 @@ def run_web():
                         job["log"] = meta_log
                     if meta.get("download_path"):
                         job["download_path"] = meta.get("download_path")
+                    if meta.get("download_debug"):
+                        job["download_debug"] = meta.get("download_debug")
                     if meta.get("result_visible"):
                         job["result_visible"] = True
                     if meta.get("reader_path"):
                         job["reader_path"] = meta.get("reader_path")
+                    if meta.get("reader_debug_path"):
+                        job["reader_debug_path"] = meta.get("reader_debug_path")
                     still_running = _job_running(job)
                     log = job.get("log") or ""
                     vis = bool(job.get("result_visible"))
                     dl = job.get("download_path")
+                    dl_dbg = job.get("download_debug")
+                    has_dbg = bool(dl_dbg or job.get("reader_debug_path") or meta.get("has_debug"))
+                    want_dbg = bool(job.get("want_debug") or meta.get("want_debug") or has_dbg)
+                    show_dbg = bool(want_dbg and (vis or still_running))
                     html = job.get("html_state") or ""
                 if not log or log.startswith("—"):
-                    return (
-                        sid, gr.update(value=sid),
-                        gr.update(), gr.update(), gr.update(),
-                        gr.update(), gr.update(), gr.update(), gr.update(),
-                    )
+                    return (sid, gr.update(value=sid)) + (gr.update(),) * 11
                 btn = "⏹  متوقف ترجمه" if still_running else "🚀  شروع ترجمه"
                 return (
                     sid,
@@ -3065,12 +3481,17 @@ def run_web():
                     gr.update(visible=vis),
                     gr.update(visible=False),
                     html if vis else gr.update(),
+                    gr.update(value=dl_dbg, visible=show_dbg and has_dbg) if (show_dbg and has_dbg) else gr.update(visible=show_dbg),
+                    gr.update(visible=show_dbg),
+                    gr.update(visible=show_dbg),
+                    gr.update(),
                 )
 
             demo.load(
                 _on_load_fallback,
                 inputs=[session_id, sid_box],
-                outputs=[session_id, sid_box, run_btn, log_box, dl_btn, btn_view, result_group, viewer_html, html_state],
+                outputs=[session_id, sid_box, run_btn, log_box, dl_btn, btn_view, result_group, viewer_html, html_state,
+                     dl_btn_debug, btn_view_debug, debug_row, html_debug_state],
             )
         except Exception:
             pass
@@ -3078,7 +3499,7 @@ def run_web():
         def _poll_job_status(sid, sid_box_v):
             preferred = (sid or sid_box_v or "").strip()
             sid = _find_active_sid(preferred) or preferred
-            empty = (gr.update(),) * 10
+            empty = (gr.update(),) * 14
             if not sid:
                 return empty
             job = _get_job(sid)
@@ -3092,17 +3513,29 @@ def run_web():
                     job["result_visible"] = True
                 if meta.get("download_path") and not job.get("download_path"):
                     job["download_path"] = meta.get("download_path")
+                if meta.get("download_debug") and not job.get("download_debug"):
+                    job["download_debug"] = meta.get("download_debug")
                 if meta.get("reader_path") and not job.get("reader_path"):
                     job["reader_path"] = meta.get("reader_path")
+                if meta.get("reader_debug_path") and not job.get("reader_debug_path"):
+                    job["reader_debug_path"] = meta.get("reader_debug_path")
                 running = _job_running(job)
                 log = job.get("log") or ""
                 vis = bool(job.get("result_visible"))
                 dl = job.get("download_path")
+                dl_dbg = job.get("download_debug")
+                has_dbg = bool(dl_dbg or job.get("reader_debug_path") or meta.get("has_debug"))
+                want_dbg = bool(job.get("want_debug") or meta.get("want_debug") or has_dbg)
+                
+                show_dbg = bool(want_dbg and (vis or running))
             btn = "⏹  متوقف ترجمه" if running else "🚀  شروع ترجمه"
+            html_dbg = ""
+            with job["lock"]:
+                html_dbg = job.get("html_debug") or ""
             return (
                 sid,
                 gr.update(value=sid),
-                gr.update(value=sid),  
+                gr.update(value=sid),
                 gr.update(value=btn),
                 gr.update(value=log) if log else gr.update(),
                 gr.update(value=dl, visible=vis) if vis else gr.update(),
@@ -3110,10 +3543,15 @@ def run_web():
                 gr.update(visible=vis),
                 gr.update(),
                 gr.update(),
+                gr.update(value=dl_dbg, visible=show_dbg and has_dbg) if (show_dbg and has_dbg) else gr.update(visible=show_dbg),
+                gr.update(visible=show_dbg),
+                gr.update(visible=show_dbg),
+                gr.update(value=html_dbg) if html_dbg else gr.update(),
             )
 
 
-        _poll_outputs = [session_id, sid_box, sid_holder, run_btn, log_box, dl_btn, btn_view, result_group, viewer_html, html_state]
+        _poll_outputs = [session_id, sid_box, sid_holder, run_btn, log_box, dl_btn, btn_view, result_group, viewer_html, html_state,
+                         dl_btn_debug, btn_view_debug, debug_row, html_debug_state]
         try:
             _timer = gr.Timer(1.0, active=True)
             _tick_evt = _timer.tick(
@@ -3196,8 +3634,7 @@ def run_web():
         def _sid_box_sync(sid_v, sid_box_v):
             preferred = (sid_v or sid_box_v or "").strip()
             if not preferred:
-                return (gr.update(), gr.update(), gr.update(), gr.update(),
-                        gr.update(), gr.update(), gr.update(), gr.update(), gr.update())
+                return (gr.update(),) * 14
             return _poll_job_status(preferred, preferred)
 
         try:
@@ -3288,7 +3725,7 @@ def run_web():
         def _hydrate_after_js(sid, holder):
             preferred = (sid or holder or "").strip()
             if not preferred:
-                return (gr.update(),) * 10
+                return (gr.update(),) * 14
             return _poll_job_status(preferred, preferred)
 
         try:
@@ -3296,6 +3733,23 @@ def run_web():
                 _hydrate_after_js,
                 inputs=[sid_holder, sid_box],
                 outputs=_poll_outputs,
+            )
+        except Exception:
+            pass
+
+
+        def _toggle_debug_ui(on):
+            on = bool(on)
+            return (
+                gr.update(visible=on),  
+                gr.update(visible=on),  
+                gr.update(visible=on),  
+            )
+        try:
+            web_debug.change(
+                _toggle_debug_ui,
+                inputs=[web_debug],
+                outputs=[debug_row, btn_view_debug, dl_btn_debug],
             )
         except Exception:
             pass
@@ -3313,7 +3767,6 @@ def run_web():
             return prefix + str(path).replace(os.sep, "/")
 
         def _open_viewer(sid, sid_box_v, st):
-            
             preferred = (sid or sid_box_v or "").strip()
             sid = _find_active_sid(preferred) or preferred
             job = _get_job(sid) if sid else None
@@ -3340,6 +3793,34 @@ def run_web():
                         path = ""
             url = _reader_file_url(path)
             return gr.update(visible=False), (st if st is not None else gr.update()), url
+
+        def _open_viewer_debug(sid, sid_box_v, st_dbg):
+            preferred = (sid or sid_box_v or "").strip()
+            sid = _find_active_sid(preferred) or preferred
+            job = _get_job(sid) if sid else None
+            path = ""
+            if job:
+                with job["lock"]:
+                    path = job.get("reader_debug_path") or ""
+            if not path or not os.path.isfile(path):
+                html = st_dbg or ""
+                if job and not html:
+                    with job["lock"]:
+                        html = job.get("html_debug") or ""
+                if html and "<html" in html.lower():
+                    try:
+                        base = os.path.join(OUT_DIR, (sid or "tmp")[:12])
+                        os.makedirs(base, exist_ok=True)
+                        path = os.path.join(base, "reader_debug.html")
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(html)
+                        if job:
+                            with job["lock"]:
+                                job["reader_debug_path"] = path
+                    except Exception:
+                        path = ""
+            url = _reader_file_url(path)
+            return gr.update(visible=False), (st_dbg if st_dbg is not None else gr.update()), url
 
         reader_url_box = gr.Textbox(value="", visible=False, elem_id="manga_reader_url")
 
@@ -3375,6 +3856,27 @@ def run_web():
                     fn=_open_viewer,
                     inputs=[session_id, sid_box, html_state],
                     outputs=[viewer_html, html_state, reader_url_box],
+                )
+            except Exception:
+                pass
+
+        try:
+            btn_view_debug.click(
+                fn=_open_viewer_debug,
+                inputs=[session_id, sid_box, html_debug_state],
+                outputs=[viewer_html, html_debug_state, reader_url_box],
+            ).then(
+                fn=None,
+                inputs=[session_id, sid_box, html_debug_state, reader_url_box],
+                outputs=[],
+                js=open_reader_js,
+            )
+        except Exception:
+            try:
+                btn_view_debug.click(
+                    fn=_open_viewer_debug,
+                    inputs=[session_id, sid_box, html_debug_state],
+                    outputs=[viewer_html, html_debug_state, reader_url_box],
                 )
             except Exception:
                 pass
