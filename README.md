@@ -15,14 +15,10 @@
 ---
 
 ## نمونه خروجی
-| before |
 ![before](examples/before.jpg)
-| debug |
-| ![debug](examples/debug.jpg)
-| clear |
+![debug](examples/debug.jpg)
 ![clear](examples/clear.jpg)
-| after |
-![after](examples/after.jpg) |
+![after](examples/after.jpg)
 
 ---
 
