@@ -19,7 +19,7 @@
 
 | * | * | * | * |
 |:---:|:---:|:---:|:---:|
-| ![before](examples/before.png) | ![debug](examples/debug.png) | ![clear](examples/clear.jpg) | ![after](examples/after.png) |
+| ![before](examples/before.jpg) | ![debug](examples/debug.jpg) | ![clear](examples/clear.jpg) | ![after](examples/after.jpg) |
 
 ---
 
