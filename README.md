@@ -16,10 +16,11 @@
 
 ## نمونه خروجی
 
+![before](examples/before.jpg)
 
-| * | * | * | * |
-|:---:|:---:|:---:|:---:|
-| ![before](examples/before.jpg) | ![debug](examples/debug.jpg) | ![clear](examples/clear.jpg) | ![after](examples/after.jpg) |
+| * | * | * |
+|:---:|:---:|:---:|
+| ![debug](examples/debug.jpg) | ![clear](examples/clear.jpg) | ![after](examples/after.jpg) |
 
 ---
 
