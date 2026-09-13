@@ -17,8 +17,8 @@
 ## نمونه خروجی
 
 | قبل | دیباگ | بعد |
-|:---:|:---:|:---:|
-| ![before](examples/before.png) | ![debug](examples/debug.png) | ![after](examples/after.png) |
+|:---:|:---:|:---:|:---:|
+| ![before](examples/before.png) | ![debug](examples/debug.png) | ![clear](examples/clear.jpg) | ![after](examples/after.png) |
 
 ---
 
