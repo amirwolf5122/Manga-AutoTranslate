@@ -7836,9 +7836,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="آستانه اطمینان تشخیص حباب RT-DETR (پیش‌فرض 0.16 — "
                         "تگ‌های چرخیده/نیمه‌شفاف نمرهٔ پایین می‌گیرند؛ OCR جعبه‌های "
                         "اضافی را خودش فیلتر می‌کند)")
-    p.add_argument("--max-chunk-height", type=int, default=8000,
+    p.add_argument("--max-chunk-height", type=int, default=3500,
                    help="حداکثر ارتفاع هر تکه OCR داخل یک تصویر (پیکسل)")
-    p.add_argument("--stitch-max-height", type=int, default=0,
+    p.add_argument("--stitch-max-height", type=int, default=8000,
                    help="۰ = بدون برش مجدد ارتفاع (ترمیم مرز متن همچنان فعال است). عدد دیگر = هدف تقریبی ارتفاع نوار؛ "
                          "برای حفظ متن و حباب ممکن است خروجی بلندتر شود")
     p.add_argument("--no-seam-repair", action="store_true",
