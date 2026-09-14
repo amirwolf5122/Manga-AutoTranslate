@@ -1893,7 +1893,6 @@ class MangaTranslator:
 
     @staticmethod
     def _static_fallback_models(primary: str) -> List[str]:
-        
         preferred = [
             "gemini-3.8-flash",
             "gemini-3.7-flash",
@@ -1914,7 +1913,6 @@ class MangaTranslator:
 
     @staticmethod
     def _model_sort_key(name: str) -> tuple:
-        
         n = name.lower().replace("models/", "")
         ver_m = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
         major_minor = 0.0
@@ -1932,38 +1930,33 @@ class MangaTranslator:
             "gemini-flash-latest", "gemini-flash-lite-latest", "gemini-pro-latest"
         )
 
-        
-        if is_lite and not is_preview:
+        if is_flash and not is_lite and not is_pro:
             type_rank = 0
-        elif is_flash and not is_lite and not is_pro and not is_preview:
+        elif is_lite:
             type_rank = 1
         elif is_preview:
-            type_rank = 3
-        elif is_pro:
-            type_rank = 4
-        else:
             type_rank = 2
+        elif is_pro:
+            type_rank = 3
+        else:
+            type_rank = 4
 
-        
         if is_latest and major_minor <= 0:
-            version_rank = -99.0 if not is_lite else -98.0
+            version_rank = 50.0
         else:
             version_rank = -major_minor
 
-        
         age_penalty = 0 if major_minor >= 2.0 or is_latest else 10
         return (age_penalty, type_rank, version_rank, n)
 
     def _discover_models_from_api(self, client) -> List[str]:
-        
         names: List[str] = []
-        
         ban_substrings = (
             "image", "tts", "live", "audio", "embedding", "gemma",
             "robotics", "omni", "nano-banana", "imagen", "computer-use",
             "computer_use", "antigravity", "veo", "lyria", "chirp",
             "dialog", "code-execution", "aqa", "text-embedding",
-            "gecko", "vision", "imagen", "dream", "bard",
+            "gecko", "vision", "dream", "bard",
         )
         try:
             for m in client.models.list():
@@ -1974,14 +1967,13 @@ class MangaTranslator:
                 low = short.lower()
                 if any(b in low for b in ban_substrings):
                     continue
-                
                 if not low.startswith("gemini"):
                     continue
                 if "flash" not in low and "pro" not in low:
                     continue
-                
                 if "preview" in low and "flash" not in low:
                     continue
+
                 actions = getattr(m, "supported_actions", None) or []
                 methods = getattr(m, "supported_generation_methods", None) or []
                 ok = False
@@ -2038,7 +2030,6 @@ class MangaTranslator:
         return None
 
     def _build_model_cascade(self, primary: str, client=None) -> List[str]:
-        
         primary = (primary or "").strip().replace("models/", "")
         if primary and self._is_bad_translate_model(primary):
             primary = ""
@@ -2051,30 +2042,31 @@ class MangaTranslator:
             discovered = [m for m in discovered if not self._is_bad_translate_model(m)]
             discovered = sorted(set(discovered), key=self._model_sort_key)
             print(
-                f"[*] {len(discovered)} مدل متنی از API کشف شد | "
-                f"{' → '.join(discovered[:8])}{'…' if len(discovered) > 8 else ''}"
+                f"[*] {len(discovered)} مدل فعال از API | "
+                f"{' → '.join(discovered[:10])}{'…' if len(discovered) > 10 else ''}"
             )
+
             cascade: List[str] = []
             if primary and primary in discovered:
-                cascade.append(primary)
-            elif primary and not self._is_bad_translate_model(primary):
                 cascade.append(primary)
             for m in discovered:
                 if m not in cascade:
                     cascade.append(m)
+
             def _costly(n: str) -> bool:
                 low = n.lower()
                 return ("pro" in low and "flash" not in low)
-            head = cascade[:1]
-            rest = cascade[1:]
-            cheap = [m for m in rest if not _costly(m)]
-            costly = [m for m in rest if _costly(m)]
-            cascade = head + cheap + costly
+
             if cascade:
+                head = cascade[:1] if (primary and primary in cascade) else []
+                rest = [m for m in cascade if m not in head]
+                cheap = [m for m in rest if not _costly(m)]
+                costly = [m for m in rest if _costly(m)]
+                cascade = head + cheap + costly
                 return cascade
 
         print("[*] کشف API ممکن نشد / خالی → fallback محافظه‌کارانه")
-        return self._static_fallback_models(primary or "gemini-2.5-flash")
+        return self._static_fallback_models(primary or "gemini-3.8-flash")
 
     def _drop_current_model_and_switch(self, reason: str = "") -> bool:
         
