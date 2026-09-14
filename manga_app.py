@@ -79,27 +79,15 @@ FONT_BUNDLES = [
     ]),
 ]
 
-def load_default_system_instruction(tone_list=None) -> str:
-    """
-    متن پیش‌فرض مترجم را از ثابت DEFAULT_SYSTEM_INSTRUCTION داخل manga.py می‌خواند.
-    فقط سورس را پارس می‌کند — بدون import ماژول سنگین.
-    """
-    path = MANGA_PY
-    if not os.path.isfile(path):
-        return ""
-    try:
-        with open(path, encoding="utf-8") as f:
-            src = f.read()
-    except Exception:
-        return ""
+def _read_py_triple_string(src: str, name: str) -> str:
     m = re.search(
-        r'DEFAULT_SYSTEM_INSTRUCTION\s*=\s*"""(.*?)"""',
+        rf'{re.escape(name)}\s*=\s*"""(.*?)"""',
         src,
         flags=re.DOTALL,
     )
     if not m:
         m = re.search(
-            r"DEFAULT_SYSTEM_INSTRUCTION\s*=\s*'''(.*?)'''",
+            rf"{re.escape(name)}\s*=\s*'''(.*?)'''",
             src,
             flags=re.DOTALL,
         )
@@ -110,20 +98,35 @@ def load_default_system_instruction(tone_list=None) -> str:
         text = text[1:]
     if text.endswith("\n"):
         text = text[:-1]
-    if tone_list is None:
-        tones = [slot for slot, *_ in FONT_BUNDLES] or ["normal"]
-        if "normal" not in tones:
-            tones = ["normal"] + tones
-        tone_list = ", ".join(tones)
-    parts = [p.strip() for p in tone_list.split(",") if p.strip()]
-    fallback = "normal" if "normal" in parts else (parts[0] if parts else "normal")
-    tone_rule = (
-        "tone الزامی و فقط یکی از: " + tone_list
-        + ". با شاهد متن انتخاب کن، نه شکل فرضی حباب؛ در تردید "
-        + fallback
-        + " بده. tone فقط برای انتخاب قلم است و رسمیت زبان را تعیین نمی‌کند.\n"
-    )
-    return text.replace("{TONE_RULE}", tone_rule).strip()
+    return text.strip()
+
+
+def strip_locked_instruction_tail(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    for marker in ("۷) ورودی و خروجی", "7) ورودی و خروجی", "{TONE_RULE}", "فقط آرایه JSON معتبر"):
+        idx = t.find(marker)
+        if idx > 0:
+            t = t[:idx].rstrip()
+            break
+    return t.strip()
+
+
+def load_default_system_instruction(tone_list=None) -> str:
+    path = MANGA_PY
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+    except Exception:
+        return ""
+    text = _read_py_triple_string(src, "DEFAULT_SYSTEM_INSTRUCTION_STYLE")
+    if text:
+        return text
+    full = _read_py_triple_string(src, "DEFAULT_SYSTEM_INSTRUCTION")
+    return strip_locked_instruction_tail(full)
 
 
 _DEFAULT_INSTR_CACHE = None
@@ -141,7 +144,6 @@ def _norm_instr(text: str) -> str:
 
 
 def is_custom_instruction(text: str) -> bool:
-    """فقط اگر کاربر متن را نسبت به پیش‌فرض manga.py عوض کرده باشد."""
     t = (text or "").strip()
     if not t:
         return False
@@ -152,7 +154,6 @@ def is_custom_instruction(text: str) -> bool:
 
 
 def instruction_for_config(text: str) -> str:
-    """فقط متن سفارشی در config ذخیره شود؛ پیش‌فرض خالی می‌ماند."""
     t = (text or "").strip()
     return t if is_custom_instruction(t) else ""
 
@@ -944,7 +945,7 @@ def run_desktop():
     glos_txt.insert("1.0", str(cfg.get("glossary_text", "") or ""))
     ttk.Checkbutton(row5c, text="بریف داستان قبل از ترجمه (لحن شخصیت‌ها حفظ شود)",
                     variable=brief_var).pack(anchor="e")
-    ttk.Label(adv, text="متن دستور مترجم — جایگزین کامل متن داخل کد می‌شود (خالی = پیش‌فرض):"
+    ttk.Label(adv, text="متن دستور مترجم (فقط لحن/سبک — بخش JSON و tone قفل است؛ خالی = پیش‌فرض):"
               ).pack(anchor="e", pady=(8, 0))
     instr_txt = tk.Text(adv, height=6, font=("Consolas", 10), bg=C_CARD, fg=C_TXT)
     instr_txt.pack(fill="x", pady=(2, 4))
@@ -2285,11 +2286,11 @@ def run_web():
                 label="واژه‌نامهٔ اسامی و اصطلاحات (هر خط: English=فارسی)",
                 placeholder="Raphdonia=رافدونیا\nBarbarian=باربارین",
                 lines=3, value=str(cfg.get("glossary_text", "") or ""))
-            gr.Markdown("<div class='hint'><b>🧠 متن دستور مترجم:</b> متن زیر جایگزین کامل "
-                        "<code>_get_system_instruction</code> داخل کد می‌شود؛ خالی = پیش‌فرض کد. "
-                        "(tone حباب‌ها جداگانه توسط AI انتخاب می‌شود و به این متن ربطی ندارد)</div>")
+            gr.Markdown("<div class='hint'><b>🧠 متن دستور مترجم:</b> فقط بخش لحن و سبک ترجمه "
+                        "قابل ویرایش است. قوانین JSON، tone و خروجی همیشه از داخل کد اعمال می‌شوند "
+                        "و قابل تغییر نیستند. خالی = پیش‌فرض.</div>")
             instruction_text = gr.Textbox(
-                label="System Instruction مترجم",
+                label="System Instruction مترجم (فقط سبک)",
                 lines=8, max_lines=25,
                 value=str(cfg.get("instruction_text") or default_system_instruction()),
                 placeholder="خالی = متن پیش‌فرض داخل کد …")
