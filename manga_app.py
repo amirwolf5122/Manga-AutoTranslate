@@ -1216,17 +1216,33 @@ def run_desktop():
             q.put(("status", ("موفق ✅", C_OK)))
             q.put(("done", target))
             
+            parent = os.path.dirname(out_v) or "."
             cands = [
                 out_v if os.path.isdir(out_v) else "",
-                os.path.join(out_v + ".cache", "out"),
-                os.path.join(out_v + ".cache", "debug"),
             ]
-            parent = os.path.dirname(out_v) or "."
+            _cache_subs = ("out", "out_safe_v3", "debug", "debug_safe_v3")
+            try:
+                cache_root = out_v + ".cache"
+                if os.path.isdir(cache_root):
+                    for sub in _cache_subs:
+                        cands.append(os.path.join(cache_root, sub))
+                    for name in os.listdir(cache_root):
+                        if name.startswith("out") or name.startswith("debug"):
+                            cands.append(os.path.join(cache_root, name))
+            except Exception:
+                pass
             try:
                 for name in os.listdir(parent):
                     if name.endswith(".cache"):
-                        cands.append(os.path.join(parent, name, "out"))
-                        cands.append(os.path.join(parent, name, "debug"))
+                        cr = os.path.join(parent, name)
+                        for sub in _cache_subs:
+                            cands.append(os.path.join(cr, sub))
+                        try:
+                            for subn in os.listdir(cr):
+                                if subn.startswith("out") or subn.startswith("debug"):
+                                    cands.append(os.path.join(cr, subn))
+                        except Exception:
+                            pass
             except Exception:
                 pass
             rd = ""
@@ -1250,13 +1266,30 @@ def run_desktop():
             dbg_file = ""
             if os.path.isfile(dbg_pdf):
                 dbg_file = dbg_pdf
-            dbg_cands = [
-                os.path.join(str(out_v) + ".cache", "debug"),
-            ]
+            dbg_cands = []
+            _dbg_subs = ("debug", "debug_safe_v3")
+            try:
+                cache_root = str(out_v) + ".cache"
+                if os.path.isdir(cache_root):
+                    for sub in _dbg_subs:
+                        dbg_cands.append(os.path.join(cache_root, sub))
+                    for name in os.listdir(cache_root):
+                        if name.startswith("debug"):
+                            dbg_cands.append(os.path.join(cache_root, name))
+            except Exception:
+                pass
             try:
                 for name in os.listdir(parent):
                     if name.endswith(".cache"):
-                        dbg_cands.append(os.path.join(parent, name, "debug"))
+                        cr = os.path.join(parent, name)
+                        for sub in _dbg_subs:
+                            dbg_cands.append(os.path.join(cr, sub))
+                        try:
+                            for subn in os.listdir(cr):
+                                if subn.startswith("debug"):
+                                    dbg_cands.append(os.path.join(cr, subn))
+                        except Exception:
+                            pass
             except Exception:
                 pass
             for c in dbg_cands:
@@ -1324,12 +1357,17 @@ def run_desktop():
                "--reading-order", str(readord_var.get())]
         
         cli_font = {"free_text": "free"}
+        active_tones = ["normal"]
         for slot, var in font_slots.items():
             if not tone_en_vars.get(slot, tk.BooleanVar(value=True)).get():
                 continue
             pv = var.get().strip()
             if pv and os.path.isfile(pv):
                 cmd += ["--font-" + cli_font.get(slot, slot.replace("_", "-")), pv]
+                if slot not in active_tones:
+                    active_tones.append(slot)
+        if active_tones:
+            cmd += ["--active-tones", ",".join(active_tones)]
         keys = [k.strip() for k in keys_var.get().replace(";", ",").split(",") if k.strip()]
         if keys:
             cmd += ["--api-key", ",".join(keys)]
@@ -2277,7 +2315,7 @@ def run_web():
                         "src": str(job.get("src") or "")[:500],
                         "reader_path": job.get("reader_path"),
                         "reader_debug_path": job.get("reader_debug_path"),
-                        "html_debug": (job.get("html_debug") or "")[:500] and True,  # flag only
+                        "html_debug": (job.get("html_debug") or "")[:500] and True,
                         "has_debug": bool(job.get("download_debug") or job.get("reader_debug_path")),
                         "want_debug": bool(job.get("want_debug")),
                     }
@@ -2417,21 +2455,37 @@ def run_web():
                 return out
 
             parent = os.path.dirname(str(out_v)) or "."
-            cache_out = os.path.join(str(out_v) + ".cache", "out")
-            cache_debug = os.path.join(str(out_v) + ".cache", "debug")
             search_dirs = [
                 out_v if os.path.isdir(out_v) else None,
-                cache_out,
-                cache_debug,
             ]
-            
+            _cache_subs = ("out", "out_safe_v3", "debug", "debug_safe_v3")
+            try:
+                cache_root = str(out_v) + ".cache"
+                if os.path.isdir(cache_root):
+                    for sub in _cache_subs:
+                        search_dirs.append(os.path.join(cache_root, sub))
+                    for name in os.listdir(cache_root):
+                        if name.startswith("out") or name.startswith("debug"):
+                            search_dirs.append(os.path.join(cache_root, name))
+            except Exception:
+                pass
             try:
                 for name in os.listdir(parent):
                     if name.endswith(".cache"):
-                        search_dirs.append(os.path.join(parent, name, "out"))
-                        search_dirs.append(os.path.join(parent, name, "debug"))
+                        cr = os.path.join(parent, name)
+                        for sub in _cache_subs:
+                            search_dirs.append(os.path.join(cr, sub))
+                        try:
+                            for subn in os.listdir(cr):
+                                if subn.startswith("out") or subn.startswith("debug"):
+                                    search_dirs.append(os.path.join(cr, subn))
+                        except Exception:
+                            pass
             except Exception:
                 pass
+            cache_debug = os.path.join(str(out_v) + ".cache", "debug_safe_v3")
+            if not os.path.isdir(cache_debug):
+                cache_debug = os.path.join(str(out_v) + ".cache", "debug")
 
             imgs = _collect_imgs(search_dirs)
             if not imgs and str(target).lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
@@ -3104,6 +3158,7 @@ def run_web():
                    "--temperature", str(float(temp_v)),
                    "--reading-order", str(readord_v)]
             cmd += font_args()
+            active_tones = ["normal"]
             for si, slot in enumerate(tone_slots):
                 fp = tone_files[si] if si < len(tone_files) else None
                 en = tone_enables[si] if si < len(tone_enables) else True
@@ -3116,9 +3171,12 @@ def run_web():
                         if os.path.isfile(srv):
                             fp = srv
                 if fp and os.path.isfile(fp):
-                    
                     _cli = {"free_text": "free"}
                     cmd += ["--font-" + _cli.get(slot, slot.replace("_", "-")), fp]
+                    if slot not in active_tones:
+                        active_tones.append(slot)
+            if active_tones:
+                cmd += ["--active-tones", ",".join(active_tones)]
             klist = [k.strip() for k in (api_keys_v or "").replace(";", ",").split(",") if k.strip()]
             if klist:
                 cmd += ["--api-key", ",".join(klist)]
