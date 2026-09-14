@@ -79,6 +79,83 @@ FONT_BUNDLES = [
     ]),
 ]
 
+def load_default_system_instruction(tone_list=None) -> str:
+    """
+    متن پیش‌فرض مترجم را از ثابت DEFAULT_SYSTEM_INSTRUCTION داخل manga.py می‌خواند.
+    فقط سورس را پارس می‌کند — بدون import ماژول سنگین.
+    """
+    path = MANGA_PY
+    if not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8") as f:
+            src = f.read()
+    except Exception:
+        return ""
+    m = re.search(
+        r'DEFAULT_SYSTEM_INSTRUCTION\s*=\s*"""(.*?)"""',
+        src,
+        flags=re.DOTALL,
+    )
+    if not m:
+        m = re.search(
+            r"DEFAULT_SYSTEM_INSTRUCTION\s*=\s*'''(.*?)'''",
+            src,
+            flags=re.DOTALL,
+        )
+    if not m:
+        return ""
+    text = m.group(1)
+    if text.startswith("\n"):
+        text = text[1:]
+    if text.endswith("\n"):
+        text = text[:-1]
+    if tone_list is None:
+        tones = [slot for slot, *_ in FONT_BUNDLES] or ["normal"]
+        if "normal" not in tones:
+            tones = ["normal"] + tones
+        tone_list = ", ".join(tones)
+    parts = [p.strip() for p in tone_list.split(",") if p.strip()]
+    fallback = "normal" if "normal" in parts else (parts[0] if parts else "normal")
+    tone_rule = (
+        "tone الزامی و فقط یکی از: " + tone_list
+        + ". با شاهد متن انتخاب کن، نه شکل فرضی حباب؛ در تردید "
+        + fallback
+        + " بده. tone فقط برای انتخاب قلم است و رسمیت زبان را تعیین نمی‌کند.\n"
+    )
+    return text.replace("{TONE_RULE}", tone_rule).strip()
+
+
+_DEFAULT_INSTR_CACHE = None
+
+
+def default_system_instruction() -> str:
+    global _DEFAULT_INSTR_CACHE
+    if _DEFAULT_INSTR_CACHE is None:
+        _DEFAULT_INSTR_CACHE = load_default_system_instruction() or ""
+    return _DEFAULT_INSTR_CACHE
+
+
+def _norm_instr(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "").strip())
+
+
+def is_custom_instruction(text: str) -> bool:
+    """فقط اگر کاربر متن را نسبت به پیش‌فرض manga.py عوض کرده باشد."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    d = default_system_instruction()
+    if not d:
+        return True
+    return _norm_instr(t) != _norm_instr(d)
+
+
+def instruction_for_config(text: str) -> str:
+    """فقط متن سفارشی در config ذخیره شود؛ پیش‌فرض خالی می‌ماند."""
+    t = (text or "").strip()
+    return t if is_custom_instruction(t) else ""
+
 
 def ensure_dirs():
     for d in (WORK_DIR, UPLOAD_DIR, OUT_DIR, FONT_DIR):
@@ -871,7 +948,7 @@ def run_desktop():
               ).pack(anchor="e", pady=(8, 0))
     instr_txt = tk.Text(adv, height=6, font=("Consolas", 10), bg=C_CARD, fg=C_TXT)
     instr_txt.pack(fill="x", pady=(2, 4))
-    instr_txt.insert("1.0", str(cfg.get("instruction_text", "") or ""))
+    instr_txt.insert("1.0", str(cfg.get("instruction_text") or default_system_instruction()))
 
     
     row6 = ttk.Frame(tab_body); row6.pack(fill="x", padx=10, pady=(4, 2))
@@ -1339,7 +1416,8 @@ def run_desktop():
                      "reading_order": readord_var.get(),
                      "story_brief": brief_var.get(),
                      "fake_test": fake_var.get(),
-                     "instruction_text": instr_txt.get("1.0", "end").rstrip(),
+                     "instruction_text": instruction_for_config(
+                         instr_txt.get("1.0", "end")),
                      "glossary_text": glos_txt.get("1.0", "end").rstrip()})
         for _slot, _en in tone_en_vars.items():
             save_config({**load_config(), "tone_en_" + _slot: _en.get()})
@@ -1394,7 +1472,7 @@ def run_desktop():
         if clean_only_var.get():
             cmd += ["--clean-only"]
         instr_text = instr_txt.get("1.0", "end").strip()
-        if instr_text:
+        if is_custom_instruction(instr_text):
             instr_path = os.path.join(OUT_DIR, "instruction_user.txt")
             with open(instr_path, "w", encoding="utf-8") as _inf:
                 _inf.write(instr_text + "\n")
@@ -2213,7 +2291,7 @@ def run_web():
             instruction_text = gr.Textbox(
                 label="System Instruction مترجم",
                 lines=8, max_lines=25,
-                value=str(cfg.get("instruction_text", "") or ""),
+                value=str(cfg.get("instruction_text") or default_system_instruction()),
                 placeholder="خالی = متن پیش‌فرض داخل کد …")
             story_brief = gr.Checkbox(
                 label="بریف داستان قبل از ترجمه (AI یک‌بار فصل را می‌خواند تا لحن شخصیت‌ها حفظ شود)",
@@ -3195,7 +3273,7 @@ def run_web():
             if web_debug_v:
                 cmd += ["--debug"]
             instr_text = str(instruction_text_v or "").strip()
-            if instr_text:
+            if is_custom_instruction(instr_text):
                 instr_path = os.path.join(user_out_dir, "instruction_user.txt")
                 with open(instr_path, "w", encoding="utf-8") as _inf:
                     _inf.write(instr_text + "\n")
