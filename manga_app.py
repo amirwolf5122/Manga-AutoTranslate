@@ -563,7 +563,7 @@ def run_cli_interactive():
            "--batch-workers", str(int(cfg.get("batch_workers", 3))),
            "--max-retries", str(int(cfg.get("max_retries", 8))),
            "--request-delay", str(float(cfg.get("request_delay", 0))),
-           "--temperature", str(float(cfg.get("temperature", 0.85))),
+           "--temperature", str(float(cfg.get("temperature", 0.6))),
            "--reading-order", str(cfg.get("reading_order", "rtl"))]
     cmd += font_args()
     klist = [k.strip() for k in (keys or "").replace(";", ",").split(",") if k.strip()]
