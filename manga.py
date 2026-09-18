@@ -1672,6 +1672,7 @@ class MangaTranslator:
         self.debug = bool(debug)
         self._last_debug_image = None
         self._last_dropped_regions = []  
+        self._last_hf_mask = None        
 
         self._name_glossary: Dict[str, str] = {}
         self._glossary_lock = threading.RLock()
@@ -5271,7 +5272,14 @@ class MangaTranslator:
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
       vis = image.copy()
 
-    
+      hfmask = getattr(self, "_last_hf_mask", None)
+      if hfmask is not None and hfmask.shape[:2] == vis.shape[:2]:
+        overlay = vis.copy()
+        overlay[hfmask > 0] = (255, 0, 255)
+        cv2.addWeighted(overlay, 0.22, vis, 0.78, 0, vis)
+        cnts, _ = cv2.findContours(hfmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(vis, cnts, -1, (255, 0, 255), 1)
+
       colors = {
         "dialogue": (0, 0, 255),      
         "promo": (0, 165, 255),       
@@ -5279,7 +5287,6 @@ class MangaTranslator:
         "junk": (128, 128, 128),      
     }
 
-      
       for r in (getattr(self, "_last_dropped_regions", None) or []):
         x, y, w, h = r.rect
         dcol = (255, 0, 0)  
@@ -5908,6 +5915,7 @@ class MangaTranslator:
         regions = self._merge_overlapping_regions(regions, iou_thresh=0.35, contain_thresh=0.65)
 
         hfm = self._hf_text_mask(image)
+        self._last_hf_mask = hfm
         if hfm is not None and regions:
             kept = []
             dropped = 0
@@ -5934,6 +5942,9 @@ class MangaTranslator:
                 if self.debug:
                     msg += " → در خروجی دیباگ با رنگ آبی (DROP) مشخص می‌شوند"
                 print(msg)
+            if self.debug and hfm is not None:
+                print("    [*] DEBUG: ماسک ComicTextSegONNX (محل متن‌هایی که دیده) "
+                      "با رنگ بنفش روی تصویر دیباگ نشان داده می‌شود")
             regions = kept
 
         print(f"    [*] RT-DETR: {n0} خام → {before} OCR → {len(regions)} نهایی")
@@ -5947,6 +5958,8 @@ class MangaTranslator:
         
         h, w = image.shape[:2]
         unique_regions: List[TextRegion] = []
+        self._last_dropped_regions = []
+        self._last_hf_mask = None
 
         if self.det is not None:
             print("[فاز ۱ - تشخیص حباب + OCR] شروع...")
@@ -6417,7 +6430,6 @@ class MangaTranslator:
             reader_pages.append((int(m_id.group(1)), urljoin(url, srcs[0])))
         reader_pages.sort(key=lambda t: t[0])
 
-        
         fb_host = ""
         m_fb = re.search(r"FALLBACK_HOST\s*=\s*[\"']([^\"']+)[\"']", raw_html)
         if m_fb:
@@ -6482,8 +6494,6 @@ class MangaTranslator:
                     seen.add(key)
                     img_urls.append(full_url)
 
-        
-        
         if reader_pages or ts_urls:
             ordered: List[str] = []
             oseen = set()
@@ -7182,6 +7192,96 @@ html, body { background: #0a0a0b; }
         candidates = sorted(set(candidates))
         return min(candidates, key=lambda y: abs(y - target_y))
 
+    def _scan_protected_ranges(self, strip: np.ndarray, y0: int, y1: int) -> List[Tuple[int, int]]:
+        
+        ranges: List[Tuple[int, int]] = []
+        if self.det is None:
+            return ranges
+        ih = strip.shape[0]
+        y0 = max(0, int(y0))
+        y1 = min(ih, int(y1))
+        if y1 <= y0:
+            return ranges
+        padding = max(40, int(round(strip.shape[1] * 0.05)))
+        start = max(0, y0 - 300)
+        for top in range(start, y1, 1160):
+            bottom = min(ih, top + 1680)
+            try:
+                boxes = self.det.detect(strip[top:bottom])
+            except Exception as exc:
+                raise RuntimeError("تشخیص حباب برای برش امن ناموفق بود.") from exc
+            for box in boxes:
+                _, by1, _, by2 = box["rect"]
+                ranges.append((top + by1 - padding, top + by2 + padding))
+        return ranges
+
+    def _safe_split_strips(self, image_files: List[str], work_dir: str) -> List[str]:
+        if not image_files:
+            return image_files
+        if self.det is None:
+            print("[!] برش امن به تشخیص حباب نیاز دارد؛ نوارها دست‌نخورده پردازش می‌شوند.")
+            return image_files
+        target = max(1000, int(self.stitch_max_height))
+        safe_max = min(target + 2000, 16000)
+        hard_cap = 16000
+        os.makedirs(work_dir, exist_ok=True)
+        out: List[str] = []
+        split_pages = 0
+        for f in image_files:
+            im = cv2.imread(f)
+            if im is None:
+                out.append(f)
+                continue
+            if im.shape[0] <= safe_max:
+                out.append(f)
+                continue
+            parts: List[np.ndarray] = [im]
+            changed = False
+            for _round in range(16):
+                new_parts: List[np.ndarray] = []
+                did_split = False
+                for part in parts:
+                    ph = int(part.shape[0])
+                    if ph <= safe_max:
+                        new_parts.append(part)
+                        continue
+                    protected = self._scan_protected_ranges(part, target - 1000, min(safe_max + 800, ph))
+                    cut_y = self._find_safe_cut_y(
+                        part, target, target, min(safe_max, ph),
+                        search_radius=max(safe_max - target, 512),
+                        protected_ranges=protected,
+                    )
+                    if cut_y is None:
+                        if ph <= hard_cap:
+                            new_parts.append(part)
+                            continue
+                        cut_y = hard_cap
+                        if any(t < cut_y < b for t, b in protected):
+                            print("[!] هشدار: برش اجباری روی سقف ۱۶۰۰۰px وسط حباب/متن افتاد.")
+                    new_parts.append(part[:cut_y])
+                    new_parts.append(part[cut_y:])
+                    did_split = True
+                    changed = True
+                parts = new_parts
+                if not did_split:
+                    break
+            if not changed:
+                out.append(f)
+                continue
+            base = os.path.splitext(os.path.basename(f))[0]
+            ext2 = os.path.splitext(f)[1] or ".png"
+            for pi, part in enumerate(parts):
+                pth = os.path.join(work_dir, f"{base}_p{pi + 1}{ext2}")
+                self._write_image(part, pth)
+                out.append(pth)
+            split_pages += len(parts)
+            hs = " + ".join(str(int(p.shape[0])) for p in parts)
+            print(f"[*] برش امن (فاز استخراج): {os.path.basename(f)} ({int(im.shape[0])}px) → "
+                  f"{len(parts)} صفحه ({hs}px)")
+        if split_pages:
+            print(f"[*] برش امن فاز استخراج: {len(image_files)} نوار → {len(out)} صفحه.")
+        return out
+
     def _repair_page_seams(self, image_files: List[str], work_dir: str) -> List[str]:
         
         if len(image_files) < 2 or not getattr(self, "repair_page_seams", True):
@@ -7268,14 +7368,7 @@ html, body { background: #0a0a0b; }
         if self.stitch_max_height <= 0:
             return self._repair_page_seams(image_files, work_dir)
 
-        work_h = max(1000, int(self.stitch_max_height))
-        hard_cap = max(16000, work_h + 2000)
-        safe_max = min(work_h + 2000, hard_cap)
-        scan_from = max(0, work_h - 1000)
-
-        if self.det is None:
-            raise RuntimeError("برش امن به تشخیص حباب نیاز دارد؛ RT-DETR بارگذاری نشده است. "
-                               "برای حفظ فایل‌های اصلی --stitch-max-height 0 را بزنید.")
+        hard_cap = 16000
 
         os.makedirs(work_dir, exist_ok=True)
         result: List[str] = []
@@ -7300,14 +7393,11 @@ html, body { background: #0a0a0b; }
         buf: List[np.ndarray] = []
         buf_h = 0
         buf_bounds: List[int] = []
-        protected: List[Tuple[int, int]] = []
-        protected_scan_y = 0
         emitted: List[Tuple[str, int]] = []
 
         print(
-            f"[*] برش امن v5: هدف={work_h}px | پنجرهٔ برش امن=[{work_h}..{safe_max}]px | "
-            f"سقف مطلق={hard_cap}px (هرگز بیشتر نمی‌شود) | "
-            f"نوارهای کوتاه‌تر از {work_h}px با ادامهٔ فصل یکی می‌شوند | "
+            f"[*] چسباندن کور v6: صفحات تا سقف {hard_cap}px یکی می‌شوند | "
+            f"برش امن این‌جا انجام نمی‌شود (در فاز استخراج، روی محل حباب/متن انجام می‌شود) | "
             f"چک عرض قبل از چسباندن: عرض نزدیک=نرمال‌سازی (۷۰۰/۸۰۰/۹۰۰→۸۰۰)، عرض متفاوت=نوار جدا"
         )
 
@@ -7329,26 +7419,6 @@ html, body { background: #0a0a0b; }
                 return True
             tol = max(150, int(round(max(w_a, w_b) * 0.15)))
             return abs(int(w_a) - int(w_b)) <= tol
-
-        def _scan_protected(strip: np.ndarray) -> None:
-            nonlocal protected, protected_scan_y
-            ih = strip.shape[0]
-            start = scan_from if protected_scan_y <= 0 else max(scan_from, protected_scan_y - 520)
-            start = min(start, ih)
-            if start >= ih:
-                return
-            padding = max(40, int(round(strip.shape[1] * 0.05)))
-            for top in range(start, ih, 1160):
-                bottom = min(ih, top + 1680)
-                try:
-                    boxes = self.det.detect(strip[top:bottom])
-                except Exception as exc:
-                    raise RuntimeError("تشخیص حباب برای برش امن ناموفق بود؛ "
-                                       "برش اجباری انجام نشد.") from exc
-                for box in boxes:
-                    _, y1, _, y2 = box["rect"]
-                    protected.append((top + y1 - padding, top + y2 + padding))
-            protected_scan_y = ih
 
         def _emit(arr: np.ndarray, bounds: List[int], label: str) -> None:
             nonlocal strip_i
@@ -7380,7 +7450,7 @@ html, body { background: #0a0a0b; }
             strip_i += 1
 
         def _rebase(cut_y: int, strip: np.ndarray) -> None:
-            nonlocal buf, buf_h, buf_bounds, protected, protected_scan_y
+            nonlocal buf, buf_h, buf_bounds
             rest = strip[cut_y:]
             if rest.size:
                 buf = [np.ascontiguousarray(rest)]
@@ -7388,19 +7458,16 @@ html, body { background: #0a0a0b; }
             else:
                 buf, buf_h = [], 0
             buf_bounds = [b - cut_y for b in buf_bounds if b > cut_y]
-            protected = [(max(0, top - cut_y), bottom - cut_y)
-                         for top, bottom in protected if bottom > cut_y]
-            protected_scan_y = max(0, protected_scan_y - cut_y)
 
         def _flush_buffer(reason: str) -> None:
-            nonlocal buf, buf_h, buf_bounds, protected, protected_scan_y
+            nonlocal buf, buf_h, buf_bounds
             if not buf:
                 return
             strip = _stack(buf)
             tail_h = int(strip.shape[0])
             tail_bounds = [b for b in buf_bounds if 0 < b < tail_h]
             absorbed = False
-            if emitted and tail_h < work_h:
+            if emitted and tail_h < hard_cap:
                 last_path, last_h = emitted[-1]
                 prev = cv2.imread(last_path)
                 prev_w = int(prev.shape[1]) if prev is not None else 0
@@ -7427,31 +7494,14 @@ html, body { background: #0a0a0b; }
             if not absorbed:
                 _emit(strip, tail_bounds, reason)
             buf, buf_h, buf_bounds = [], 0, []
-            protected, protected_scan_y = [], 0
 
         def _cut_loop() -> None:
-            while buf_h >= work_h:
+            
+            while buf_h >= hard_cap:
                 strip = _stack(buf)
-                ih = int(strip.shape[0])
-                _scan_protected(strip)
-                cut_y = self._find_safe_cut_y(
-                    strip, work_h, work_h, min(safe_max, ih),
-                    search_radius=max(safe_max - work_h, 512),
-                    protected_ranges=protected,
-                )
-                forced = False
-                if cut_y is None and ih >= hard_cap:
-                    cut_y = hard_cap
-                    forced = True
-                    if any(top < hard_cap < bottom for top, bottom in protected):
-                        print("[!] هشدار: برش اجباری روی سقف ۱۶۰۰۰px وسط حباب/متن افتاد "
-                              "(در پنجرهٔ برش امن هیچ محل خالی پیدا نشد).")
-                if cut_y is None:
-                    break
+                cut_y = hard_cap
                 bounds = [b for b in buf_bounds if 0 < b < cut_y]
-                label = (f"برش اجباری سقف {hard_cap}px" if forced
-                         else f"برش امن y={cut_y}")
-                _emit(strip[:cut_y], bounds, label)
+                _emit(strip[:cut_y], bounds, f"برش کورِ سقف {hard_cap}px")
                 _rebase(cut_y, strip)
 
         for f in image_files:
@@ -7466,8 +7516,7 @@ html, body { background: #0a0a0b; }
                       "صفحهٔ جدید نوار تازهٔ خودش را شروع کرد.")
                 _flush_buffer("تغییر عرض")
             if not buf:
-                
-                
+
                 ref = target_w if _width_compatible(w, target_w) else w
             else:
                 ref = int(buf[0].shape[1])
@@ -7483,12 +7532,11 @@ html, body { background: #0a0a0b; }
         _cut_loop()
 
         if buf:
-            _flush_buffer("پایان فصل" if buf_h < work_h
-                          else "پایان فصل: بزرگ‌تر از هدف، محل برش امن پیدا نشد")
+            _flush_buffer("پایان فصل")
 
         print(
-            f"[*] برش صفحات: {len(image_files)} صفحه → {len(result)} نوار "
-            f"(هدف={work_h}px / سقف={hard_cap}px)"
+            f"[*] چسباندن صفحات: {len(image_files)} صفحه → {len(result)} نوار "
+            f"(سقف={hard_cap}px) — برش امن در فاز استخراج انجام می‌شود"
         )
         return result if result else image_files
 
@@ -7506,7 +7554,7 @@ html, body { background: #0a0a0b; }
 
         src_dir = os.path.join(cache_dir, "src")
         
-        cache_tag = "_safe_v5" if (self.stitch_max_height > 0 or getattr(self, "repair_page_seams", True)) else ""
+        cache_tag = "_safe_v6" if (self.stitch_max_height > 0 or getattr(self, "repair_page_seams", True)) else ""
         out_dir = os.path.join(cache_dir, "out" + cache_tag)
         os.makedirs(src_dir, exist_ok=True)
         os.makedirs(out_dir, exist_ok=True)
@@ -7725,6 +7773,11 @@ html, body { background: #0a0a0b; }
             stitch_dir = os.path.join(cache_dir, "stitched")
             image_files = self._stitch_pages_for_efficiency(image_files, stitch_dir)
 
+        
+        if self.stitch_max_height > 0:
+            split_dir = os.path.join(cache_dir, "safecut")
+            image_files = self._safe_split_strips(image_files, split_dir)
+
         processed_files = []
         skipped = 0
         page_ext = "." + (self.img_format or "webp").lstrip(".")
@@ -7794,18 +7847,37 @@ html, body { background: #0a0a0b; }
         dialogue_buffer: List[TextRegion] = []
         global_id = 0
 
+        
+        translate_pool = ThreadPoolExecutor(max_workers=1)
+        translate_futures: List = []
+
+        def _wait_translations() -> None:
+            if not translate_futures:
+                return
+            print(f"[*] انتظار برای پایان {len(translate_futures)} دسته ترجمهٔ پس‌زمینه...")
+            for fut in translate_futures:
+                try:
+                    fut.result()
+                except GeminiQuotaExhausted as e:
+                    print(f"\n[!] {e}")
+                except Exception as e:
+                    print(f"    [!] خطای ترجمهٔ پس‌زمینه: {e}", file=sys.stderr)
+            translate_futures.clear()
+
         def _flush_translate_buffer(force: bool = False) -> None:
             nonlocal dialogue_buffer
             if not dialogue_buffer:
+                return
+            if getattr(self, "clean_only", False):
                 return
             if not force and len(dialogue_buffer) < min_batch:
                 return
             n = len(dialogue_buffer)
             print(
-                f"[فاز ۳ - ترجمهٔ بافر] {n} دیالوگ "
+                f"[فاز ۳ - ترجمهٔ پس‌زمینه] {n} دیالوگ "
                 f"(حداقل={min_batch}) → {self.provider}/{self.model_name} ..."
             )
-            self.translate_regions(dialogue_buffer)
+            translate_futures.append(translate_pool.submit(self.translate_regions, dialogue_buffer))
             dialogue_buffer = []
 
         def _queue_dialogues(regions: List[TextRegion]) -> None:
@@ -7825,11 +7897,11 @@ html, body { background: #0a0a0b; }
                 chunk = dialogue_buffer[:cap]
                 dialogue_buffer = dialogue_buffer[cap:]
                 print(
-                    f"[فاز ۳ - ترجمهٔ بافر] {len(chunk)} دیالوگ "
+                    f"[فاز ۳ - ترجمهٔ پس‌زمینه] {len(chunk)} دیالوگ "
                     f"(مانده در بافر={len(dialogue_buffer)}) → "
-                    f"{self.provider}/{self.model_name} ..."
+                    f"{self.provider}/{self.model_name} ... (استخراج ادامه دارد)"
                 )
-                self.translate_regions(chunk)
+                translate_futures.append(translate_pool.submit(self.translate_regions, chunk))
 
         if getattr(self, "clean_only", False):
             print("[*] حالت پاکسازی بدون ترجمه — API فراخوانی نمی‌شود.")
@@ -7837,7 +7909,7 @@ html, body { background: #0a0a0b; }
         else:
             print(
                 f"[*] حالت صرفه‌جویی API: تا رسیدن به {min_batch} دیالوگ ترجمه نمی‌شود؛ "
-                f"استخراج همه صفحات، بعد ترجمهٔ دسته‌ای، بعد رندر."
+                f"استخراج ادامه دارد و ترجمهٔ دسته‌ها هم‌زمان در پس‌زمینه انجام می‌شود."
             )
 
         
@@ -7854,11 +7926,13 @@ html, body { background: #0a0a0b; }
                 if dialogue_buffer and len(dialogue_buffer) < min_batch:
                     print(
                         f"    [*] بافر ترجمه: {len(dialogue_buffer)}/{min_batch} "
-                        f"— صبر تا صفحات بعدی..."
+                        f"— ترجمه در پس‌زمینه؛ استخراج ادامه دارد..."
                     )
 
         
         _flush_translate_buffer(force=True)
+        _wait_translations()
+        translate_pool.shutdown(wait=True)
 
         
         for page_i, out_file, image, regions, dbg in extracted:
@@ -8163,11 +8237,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-chunk-height", type=int, default=3500,
                    help="حداکثر ارتفاع هر تکه OCR داخل یک تصویر (پیکسل)")
     p.add_argument("--stitch-max-height", type=int, default=12000,
-                   help="هدف ارتفاع نوار (پیش‌فرض ۱۲۰۰۰). وقتی ارتفاع به هدف رسید، در پنجرهٔ "
-                        "[هدف تا هدف+۲۰۰۰] دنبال برش امن می‌گردد؛ اگر تا سقف ۱۶۰۰۰ محل امنی "
-                        "پیدا نشود، دقیقاً روی ۱۶۰۰۰ برش اجباری زده می‌شود (هیچ نواری بیشتر "
-                        "از ۱۶۰۰۰ ساخته نمی‌شود). نوارهای کوتاه‌تر از هدف با ادامهٔ فصل یکی می‌شوند. "
-                        "۰ = بدون برش مجدد ارتفاع (فقط ترمیم مرز متن)")
+                   help="هدف برش امن در فاز استخراج (پیش‌فرض ۱۲۰۰۰). ابتدا صفحات کورکورانه "
+                        "تا سقف ۱۶۰۰۰ چسبانده می‌شوند (بدون چک حباب)؛ بعد در فاز استخراج، "
+                        "نوارهای بلندتر از هدف در پنجرهٔ [هدف تا هدف+۲۰۰۰] روی محل امن "
+                        "شکسته می‌شوند. "
+                        "۰ = بدون چسباندن/برش (فقط ترمیم مرز متن)")
     p.add_argument("--no-seam-repair", action="store_true",
                    help="با ارتفاع برش ۰، ترمیم خودکار متن مشترک بین دو تصویر را هم خاموش کن (ممکن است متن نصف شود)")
     p.add_argument("--stitch-short-threshold", type=int, default=0,

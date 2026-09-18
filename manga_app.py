@@ -1298,6 +1298,7 @@ def run_desktop():
             cands = [
                 out_v if os.path.isdir(out_v) else "",
             ]
+            
             _cache_subs = ("out", "out_safe_v3", "out_safe_v4", "out_safe_v5", "out_safe_v6")
             try:
                 cache_root = out_v + ".cache"
@@ -2536,6 +2537,7 @@ def run_web():
             parent = os.path.dirname(str(out_v)) or "."
 
             def _cache_dirs(prefix):
+                
                 dirs = []
                 roots = []
                 cache_root = str(out_v) + ".cache"
@@ -2631,6 +2633,7 @@ def run_web():
                 extra = "\n⚠ تصاویر برای نمایشگر پیدا نشد — فقط دانلود فعال است."
             if debug_imgs or download_debug:
                 extra += f"\n🔍 دیباگ: {len(debug_imgs)} صفحه آماده نمایش/دانلود"
+            
             with job["lock"]:
                 cur_log = (job.get("log") or "").rstrip()
             if not cur_log or cur_log.startswith("—"):
@@ -3675,6 +3678,7 @@ def run_web():
             with job["lock"]:
                 mem_log = job.get("log") or ""
                 meta_log = meta.get("log") or ""
+                
                 mem_done = ("تمام شد" in mem_log) or ("✅" in mem_log)
                 if meta_log and not mem_done and (
                     len(meta_log) > len(mem_log) or not mem_log or mem_log.startswith("—")
