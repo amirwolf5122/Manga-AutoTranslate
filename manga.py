@@ -1670,7 +1670,8 @@ class MangaTranslator:
         self.stitch_keep_first = bool(stitch_keep_first)
         self.repair_page_seams = bool(repair_page_seams)
         self.debug = bool(debug)
-        self._last_debug_image = None  
+        self._last_debug_image = None
+        self._last_dropped_regions = []  
 
         self._name_glossary: Dict[str, str] = {}
         self._glossary_lock = threading.RLock()
@@ -5278,6 +5279,24 @@ class MangaTranslator:
         "junk": (128, 128, 128),      
     }
 
+      
+      for r in (getattr(self, "_last_dropped_regions", None) or []):
+        x, y, w, h = r.rect
+        dcol = (255, 0, 0)  
+        cv2.rectangle(vis, (x, y), (x + w, y + h), dcol, 1)
+        cv2.line(vis, (x, y), (x + w, y + h), dcol, 1)
+        cv2.line(vis, (x + w, y), (x, y + h), dcol, 1)
+        label = f"[{r.id}] DROP"
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
+        ytop = max(th + 6, y)
+        cv2.rectangle(vis, (x, ytop - th - 6), (x + tw + 4, ytop), dcol, -1)
+        cv2.putText(vis, label, (x + 2, ytop - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        short = (r.source_text or "")[:28]
+        if short:
+            cv2.putText(vis, short, (x, min(y + h + 14, vis.shape[0] - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, dcol, 1, cv2.LINE_AA)
+
       for r in regions:
         x, y, w, h = r.rect
         color = colors.get(r.kind, (0, 0, 255))
@@ -5822,6 +5841,7 @@ class MangaTranslator:
 
     def _extract_regions_from_bubbles(self, image: np.ndarray) -> List[TextRegion]:
         
+        self._last_dropped_regions = []
         if self.det is None:
             return []
         boxes = self.det.detect(image)
@@ -5891,6 +5911,7 @@ class MangaTranslator:
         if hfm is not None and regions:
             kept = []
             dropped = 0
+            dropped_regions: List[TextRegion] = []
             for r in regions:
                 det_class = (getattr(r, "det_class", "") or "")
                 if det_class in ("bubble", "text_bubble"):
@@ -5904,10 +5925,15 @@ class MangaTranslator:
                 latin = len(re.sub(r"[^A-Za-z]", "", r.source_text or ""))
                 if hf_hits < 10 and latin < 30:
                     dropped += 1
+                    dropped_regions.append(r)
                     continue
                 kept.append(r)
+            self._last_dropped_regions = dropped_regions
             if dropped:
-                print(f"    [*] {dropped} ناحیهٔ مشکوک (در ماسک متن HF متنی نبود) حذف شد")
+                msg = f"    [*] {dropped} ناحیهٔ مشکوک (در ماسک متن HF متنی نبود) حذف شد"
+                if self.debug:
+                    msg += " → در خروجی دیباگ با رنگ آبی (DROP) مشخص می‌شوند"
+                print(msg)
             regions = kept
 
         print(f"    [*] RT-DETR: {n0} خام → {before} OCR → {len(regions)} نهایی")
@@ -6380,6 +6406,37 @@ class MangaTranslator:
         img_urls, seen = [], set()
         raw_html = resp.text if hasattr(resp, "text") else resp.content.decode("utf-8", errors="ignore")
 
+        reader_pages: List[Tuple[int, str]] = []
+        for img in soup.find_all("img"):
+            m_id = re.match(r"^\s*image-(\d+)\s*$", str(img.get("id") or ""), re.I)
+            if not m_id:
+                continue
+            srcs = MangaTranslator._extract_src_candidates(img)
+            if not srcs:
+                continue
+            reader_pages.append((int(m_id.group(1)), urljoin(url, srcs[0])))
+        reader_pages.sort(key=lambda t: t[0])
+
+        
+        fb_host = ""
+        m_fb = re.search(r"FALLBACK_HOST\s*=\s*[\"']([^\"']+)[\"']", raw_html)
+        if m_fb:
+            fb_host = m_fb.group(1).strip().rstrip("/")
+
+        
+        ts_urls: List[str] = []
+        m_ts = re.search(r"ts_reader\.run\((\{.*?\})\)", raw_html, re.S)
+        if m_ts:
+            try:
+                ts_data = json.loads(m_ts.group(1))
+                ts_imgs = ts_data.get("images") or []
+                if ts_imgs and isinstance(ts_imgs[0], (list, tuple)):
+                    ts_imgs = max((list(x) for x in ts_imgs), key=len)
+                ts_urls = [u.strip() for u in ts_imgs
+                           if isinstance(u, str) and u.strip()]
+            except Exception:
+                ts_urls = []
+
         
         json_page_urls = []
         for m in re.finditer(
@@ -6424,6 +6481,27 @@ class MangaTranslator:
                 if key not in seen and not MangaTranslator._is_junk_image_url(full_url):
                     seen.add(key)
                     img_urls.append(full_url)
+
+        
+        
+        if reader_pages or ts_urls:
+            ordered: List[str] = []
+            oseen = set()
+            src_pairs = (reader_pages
+                         if reader_pages else [(i + 1, u) for i, u in enumerate(ts_urls)])
+            for _, u in src_pairs:
+                full_url = MangaTranslator._normalize_image_url(u)
+                key = full_url.split("?")[0].lower()
+                if key in oseen:
+                    continue
+                oseen.add(key)
+                ordered.append(full_url)
+            if ordered and len(ordered) >= len(img_urls):
+                if reader_pages:
+                    print(f"    [*] {len(ordered)} صفحهٔ خواننده (id=image-N) به ترتیب پیدا شد.")
+                else:
+                    print(f"    [*] {len(ordered)} صفحه از ts_reader به ترتیب پیدا شد.")
+                img_urls = ordered
 
         if not img_urls:
             print("    [!] هیچ تگ تصویری معتبری در صفحه پیدا نشد.")
@@ -6476,17 +6554,29 @@ class MangaTranslator:
 
         def _fetch_one(idx_url):
             idx, img_url = idx_url
-            for attempt in range(2):
+            
+            attempts = [img_url]
+            if fb_host and fb_host.lower() not in img_url.lower():
+                _p = urlparse(img_url)
+                attempts.append(fb_host + _p.path + (("?" + _p.query) if _p.query else ""))
+            attempts.append(img_url + ("&" if "?" in img_url else "?") + "r=2")
+            last_err = ""
+            for att, cand in enumerate(attempts):
                 try:
-                    r = requests.get(img_url, headers=headers, timeout=60)
+                    r = requests.get(cand, headers=headers, timeout=60)
                     r.raise_for_status()
+                    ct = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                    if ct and not ct.startswith("image/"):
+                        raise ValueError(f"نوع محتوا {ct} (تصویر نیست)")
+                    path = _save_bytes(r.content, idx, cand)
+                    if path:
+                        return idx, path
+                    raise ValueError("دادهٔ تصویر decode نشد")
                 except Exception as e:
-                    if attempt == 0:
-                        time.sleep(1.0)
-                        continue
-                    print(f"    [!] رد شد ({img_url[:90]}…): {e}")
-                    return None
-                return idx, _save_bytes(r.content, idx, img_url)
+                    last_err = str(e)
+                    if att < len(attempts) - 1:
+                        time.sleep(0.8)
+            print(f"    [!] رد شد ({img_url[:90]}…): {last_err}")
             return None
 
         with ThreadPoolExecutor(max_workers=min(8, max(2, len(img_urls)))) as dl_ex:
@@ -7173,116 +7263,103 @@ html, body { background: #0a0a0b; }
         return result
 
     def _stitch_pages_for_efficiency(self, image_files: List[str], work_dir: str) -> List[str]:
-        
         if not image_files:
             return image_files
         if self.stitch_max_height <= 0:
             return self._repair_page_seams(image_files, work_dir)
 
-        
-        
-        work_h = int(self.stitch_max_height)
-        
-        
-        soft_h = int(getattr(self, "stitch_short_threshold", 0) or 0)
-        if soft_h > work_h:
-            work_h = soft_h
-        lookahead = max(512, min(2000, work_h // 2))
+        work_h = max(1000, int(self.stitch_max_height))
+        hard_cap = max(16000, work_h + 2000)
+        safe_max = min(work_h + 2000, hard_cap)
+        scan_from = max(0, work_h - 1000)
+
+        if self.det is None:
+            raise RuntimeError("برش امن به تشخیص حباب نیاز دارد؛ RT-DETR بارگذاری نشده است. "
+                               "برای حفظ فایل‌های اصلی --stitch-max-height 0 را بزنید.")
 
         os.makedirs(work_dir, exist_ok=True)
         result: List[str] = []
         if not hasattr(self, "_strip_boundaries"):
             self._strip_boundaries = {}
         self._strip_boundaries = {}
-        start_idx = 0
-
-        if self.det is None and (len(image_files) > 1 or not self.stitch_keep_first):
-            raise RuntimeError("برش امن به تشخیص حباب نیاز دارد؛ RT-DETR بارگذاری نشده است. "
-                               "برای حفظ فایل‌های اصلی --stitch-max-height 0 را بزنید.")
-
-        keep_first = bool(self.stitch_keep_first)
-        current_protected: List[Tuple[int, int]] = []
-        if keep_first and len(image_files) > 1:
-            
-            first, second = (cv2.imread(f) for f in image_files[:2])
-            if first is None or second is None:
-                raise RuntimeError("خواندن دو تصویر اول برای بررسی مرز امن ناموفق بود؛ صفحه حذف نشد.")
-            seam_w = min(first.shape[1], second.shape[1])
-            if self.max_output_width and self.max_output_width > 0:
-                seam_w = min(seam_w, self.max_output_width)
-            first = self._normalize_page_width(first, target_w=seam_w)
-            second = self._normalize_page_width(second, target_w=seam_w)
-            context = max(320, int(round(seam_w * 0.75)))
-            tail, head = first[-context:], second[:context]
-            preview = np.vstack([tail, head])
-            seam_y = len(tail)
-            padding = max(40, int(round(seam_w * 0.05)))
-            try:
-                protected = [
-                    (box["rect"][1] - padding, box["rect"][3] + padding)
-                    for box in self.det.detect(preview)
-                ]
-            except Exception as exc:
-                raise RuntimeError("بررسی مرز صفحهٔ اول ناموفق بود؛ برای جلوگیری از قطع متن "
-                                   "صفحه جدا نشد.") from exc
-            keep_first = self._find_safe_cut_y(
-                preview, seam_y, seam_y, seam_y, protected_ranges=protected,
-            ) is not None
-            if not keep_first:
-                current_protected = [
-                    (top + len(first) - seam_y, bottom + len(first) - seam_y)
-                    for top, bottom in protected
-                ]
-                print("[*] مرز صفحهٔ اول امن نیست؛ برای حفظ متنِ ادامه‌دار به صفحهٔ بعد چسبانده می‌شود.")
-            del first, second, tail, head, preview
-
-        if keep_first:
-            ext_s = "." + (getattr(self, "img_format", None) or "webp").lstrip(".")
-            if ext_s == ".jpeg":
-                ext_s = ".jpg"
-            first_out = os.path.join(work_dir, f"strip_000_cover{ext_s}")
-            shutil.copy2(image_files[0], first_out)
-            result.append(first_out)
-            start_idx = 1
-            if start_idx >= len(image_files):
-                return result
 
         sample_widths = []
-        for f in image_files[start_idx:start_idx + min(8, len(image_files) - start_idx)]:
+        for f in image_files[:min(8, len(image_files))]:
             im = cv2.imread(f)
             if im is None:
                 raise RuntimeError(f"خواندن تصویر ناموفق بود؛ صفحه حذف نشد: {f}")
             sample_widths.append(im.shape[1])
         sample_widths.sort()
         target_w = sample_widths[len(sample_widths) // 2]
-        if current_protected:
-            
-            scale = target_w / float(seam_w)
-            current_protected = [
-                (int(np.floor(top * scale)) - 2, int(np.ceil(bottom * scale)) + 2)
-                for top, bottom in current_protected
-            ]
+
+        ext_s = "." + (getattr(self, "img_format", None) or "webp").lstrip(".")
+        if ext_s == ".jpeg":
+            ext_s = ".jpg"
 
         strip_i = 0
-        current_pages: List[np.ndarray] = []
-        current_h = 0
-        current_bounds: List[int] = []
-        min_strip = max(1, int(work_h * 0.65))
+        buf: List[np.ndarray] = []
+        buf_h = 0
+        buf_bounds: List[int] = []
+        protected: List[Tuple[int, int]] = []
+        protected_scan_y = 0
+        emitted: List[Tuple[str, int]] = []
+
         print(
-            f"[*] چسباندن streaming + برش امن: هدف={work_h}px | "
-            f"نگاه به جلو={lookahead}px | ارتفاع هدف است، نه برش اجباری"
+            f"[*] برش امن v5: هدف={work_h}px | پنجرهٔ برش امن=[{work_h}..{safe_max}]px | "
+            f"سقف مطلق={hard_cap}px (هرگز بیشتر نمی‌شود) | "
+            f"نوارهای کوتاه‌تر از {work_h}px با ادامهٔ فصل یکی می‌شوند | "
+            f"چک عرض قبل از چسباندن: عرض نزدیک=نرمال‌سازی (۷۰۰/۸۰۰/۹۰۰→۸۰۰)، عرض متفاوت=نوار جدا"
         )
 
-        def _stack_pages(pages: List[np.ndarray]) -> np.ndarray:
+        def _stack(pages: List[np.ndarray]) -> np.ndarray:
             return np.vstack(pages) if len(pages) > 1 else pages[0]
 
-        def _emit_array(arr: np.ndarray, bounds: List[int], label: str = "") -> None:
+        def _resize_to(arr: np.ndarray, tw: int) -> np.ndarray:
+            
+            h, w = arr.shape[:2]
+            if w == tw or tw <= 0:
+                return arr
+            nh = max(1, int(round(h * (tw / float(w)))))
+            interp = cv2.INTER_AREA if tw < w else cv2.INTER_CUBIC
+            return np.ascontiguousarray(cv2.resize(arr, (tw, nh), interpolation=interp))
+
+        def _width_compatible(w_a: int, w_b: int) -> bool:
+            
+            if not w_a or not w_b:
+                return True
+            tol = max(150, int(round(max(w_a, w_b) * 0.15)))
+            return abs(int(w_a) - int(w_b)) <= tol
+
+        def _scan_protected(strip: np.ndarray) -> None:
+            nonlocal protected, protected_scan_y
+            ih = strip.shape[0]
+            start = scan_from if protected_scan_y <= 0 else max(scan_from, protected_scan_y - 520)
+            start = min(start, ih)
+            if start >= ih:
+                return
+            padding = max(40, int(round(strip.shape[1] * 0.05)))
+            for top in range(start, ih, 1160):
+                bottom = min(ih, top + 1680)
+                try:
+                    boxes = self.det.detect(strip[top:bottom])
+                except Exception as exc:
+                    raise RuntimeError("تشخیص حباب برای برش امن ناموفق بود؛ "
+                                       "برش اجباری انجام نشد.") from exc
+                for box in boxes:
+                    _, y1, _, y2 = box["rect"]
+                    protected.append((top + y1 - padding, top + y2 + padding))
+            protected_scan_y = ih
+
+        def _emit(arr: np.ndarray, bounds: List[int], label: str) -> None:
             nonlocal strip_i
             if arr is None or arr.size == 0:
                 return
-            ext_s = "." + (getattr(self, "img_format", None) or "webp").lstrip(".")
-            if ext_s == ".jpeg":
-                ext_s = ".jpg"
+            h = int(arr.shape[0])
+            if h > hard_cap:
+                raise RuntimeError(
+                    f"نوار {strip_i + 1} ارتفاع {h}px شد؛ بیشتر از سقف {hard_cap}px مجاز نیست. "
+                    "پردازش متوقف شد تا متن نصف‌شده ذخیره نشود."
+                )
             out_path = os.path.join(work_dir, f"strip_{strip_i + 1:03d}{ext_s}")
             scale = (self.max_output_width / float(arr.shape[1])
                      if getattr(self, "max_output_width", 0) else 1.0)
@@ -7291,99 +7368,127 @@ html, body { background: #0a0a0b; }
             if codec_limit and max(encoded_size) > codec_limit:
                 raise RuntimeError("نوار امن برای این فرمت بیش از حد بزرگ است؛ "
                                    "با --img-format png دوباره اجرا کنید. "
-                                   "برای رعایت محدودیت فرمت از وسط متن برش زده نشد.")
+                                   "از وسط متن برش زده نشد.")
             self._write_image(arr, out_path)
             if bounds:
-                kept = [b for b in bounds if 0 < b < arr.shape[0] - 20]
+                kept = [b for b in bounds if 0 < b < h - 20]
                 if kept:
                     self._strip_boundaries[out_path] = kept
             result.append(out_path)
-            print(f"    [+] نوار {strip_i + 1}: {label} ({arr.shape[0]}px)")
+            emitted.append((out_path, h))
+            print(f"    [+] نوار {strip_i + 1}: {label} ({h}px)")
             strip_i += 1
 
-        def _cut_and_emit(final: bool = False) -> None:
-            nonlocal current_pages, current_h, current_bounds, current_protected
-            if not current_pages or (not final and current_h < work_h + lookahead):
+        def _rebase(cut_y: int, strip: np.ndarray) -> None:
+            nonlocal buf, buf_h, buf_bounds, protected, protected_scan_y
+            rest = strip[cut_y:]
+            if rest.size:
+                buf = [np.ascontiguousarray(rest)]
+                buf_h = int(rest.shape[0])
+            else:
+                buf, buf_h = [], 0
+            buf_bounds = [b - cut_y for b in buf_bounds if b > cut_y]
+            protected = [(max(0, top - cut_y), bottom - cut_y)
+                         for top, bottom in protected if bottom > cut_y]
+            protected_scan_y = max(0, protected_scan_y - cut_y)
+
+        def _flush_buffer(reason: str) -> None:
+            nonlocal buf, buf_h, buf_bounds, protected, protected_scan_y
+            if not buf:
                 return
+            strip = _stack(buf)
+            tail_h = int(strip.shape[0])
+            tail_bounds = [b for b in buf_bounds if 0 < b < tail_h]
+            absorbed = False
+            if emitted and tail_h < work_h:
+                last_path, last_h = emitted[-1]
+                prev = cv2.imread(last_path)
+                prev_w = int(prev.shape[1]) if prev is not None else 0
+                if (prev is not None and _width_compatible(prev_w, int(strip.shape[1]))
+                        and last_h + tail_h <= hard_cap):
+                    tail_r = _resize_to(strip, prev_w) if strip.shape[1] != prev_w else strip
+                    merged_h = int(tail_r.shape[0])
+                    if last_h + merged_h <= hard_cap:
+                        merged = np.vstack([prev, tail_r])
+                        if tail_r is not strip:
+                            sf = float(merged_h) / float(max(1, strip.shape[0]))
+                            tail_bounds = [int(round(b * sf)) for b in tail_bounds]
+                        merged_bounds = (
+                            list(self._strip_boundaries.get(last_path, []))
+                            + [last_h + b for b in tail_bounds if 0 < b < merged_h - 20]
+                        )
+                        self._write_image(merged, last_path)
+                        if merged_bounds:
+                            self._strip_boundaries[last_path] = merged_bounds
+                        emitted[-1] = (last_path, last_h + merged_h)
+                        absorbed = True
+                        print(f"    [+] {reason}: دمِ کوتاه ({tail_h}px) به نوار قبلی چسباند "
+                              f"→ {last_h + merged_h}px")
+            if not absorbed:
+                _emit(strip, tail_bounds, reason)
+            buf, buf_h, buf_bounds = [], 0, []
+            protected, protected_scan_y = [], 0
 
-            strip = _stack_pages(current_pages)
-            ih = int(strip.shape[0])
-            protected = list(current_protected)
-            padding = max(40, int(round(target_w * 0.05)))
-            if ih >= work_h + min_strip:
-                
-                
-                for top in range(0, ih, 1160):
-                    bottom = min(ih, top + 1680)
-                    try:
-                        boxes = self.det.detect(strip[top:bottom])
-                        for box in boxes:
-                            _, y1, _, y2 = box["rect"]
-                            protected.append((top + y1 - padding, top + y2 + padding))
-                    except Exception as exc:
-                        raise RuntimeError("تشخیص حباب برای برش امن ناموفق بود؛ "
-                                           "برش اجباری انجام نشد.") from exc
-                    if bottom == ih:
-                        break
-
-            offset = 0
-            while ih - offset >= work_h + min_strip:
-                max_cut = ih - max(min_strip, lookahead if not final else 0)
-                target = offset + work_h
+        def _cut_loop() -> None:
+            while buf_h >= work_h:
+                strip = _stack(buf)
+                ih = int(strip.shape[0])
+                _scan_protected(strip)
                 cut_y = self._find_safe_cut_y(
-                    strip, target, offset + min_strip, max_cut,
-                    search_radius=lookahead, protected_ranges=protected,
+                    strip, work_h, work_h, min(safe_max, ih),
+                    search_radius=max(safe_max - work_h, 512),
+                    protected_ranges=protected,
                 )
-                if cut_y is None:
-                    cut_y = self._find_safe_cut_y(
-                        strip, target, offset + min_strip, max_cut,
-                        search_radius=ih, protected_ranges=protected,
-                    )
+                forced = False
+                if cut_y is None and ih >= hard_cap:
+                    cut_y = hard_cap
+                    forced = True
+                    if any(top < hard_cap < bottom for top, bottom in protected):
+                        print("[!] هشدار: برش اجباری روی سقف ۱۶۰۰۰px وسط حباب/متن افتاد "
+                              "(در پنجرهٔ برش امن هیچ محل خالی پیدا نشد).")
                 if cut_y is None:
                     break
-                bounds = [b - offset for b in current_bounds if offset < b < cut_y]
-                _emit_array(strip[offset:cut_y], bounds, f"برش بررسی‌شده y={cut_y}")
-                offset = cut_y
+                bounds = [b for b in buf_bounds if 0 < b < cut_y]
+                label = (f"برش اجباری سقف {hard_cap}px" if forced
+                         else f"برش امن y={cut_y}")
+                _emit(strip[:cut_y], bounds, label)
+                _rebase(cut_y, strip)
 
-            current_h = ih - offset
-            current_bounds = [b - offset for b in current_bounds if b > offset]
-            current_protected = [(max(0, top - offset), bottom - offset)
-                                 for top, bottom in current_protected if bottom >= offset]
-            if final:
-                label = ("پایان فصل" if current_h <= work_h + min_strip
-                         else "بزرگ‌تر از هدف: محل برش امن پیدا نشد")
-                _emit_array(strip[offset:], current_bounds, label)
-                current_pages, current_h, current_bounds = [], 0, []
-            else:
-                
-                current_pages = [strip[offset:].copy()]
-                if current_h > max(32000, work_h * 8):
-                    raise RuntimeError("نوار بدون محل برش امن بیش از حد بلند شد؛ "
-                                       "برای جلوگیری از قطع متن، پردازش متوقف شد.")
-
-        for f in image_files[start_idx:]:
+        for f in image_files:
             im = cv2.imread(f)
             if im is None:
                 raise RuntimeError(f"خواندن تصویر ناموفق بود؛ صفحه حذف نشد: {f}")
             h, w = im.shape[:2]
-            if w != target_w and target_w > 0:
+            
+            if buf and not _width_compatible(w, int(buf[0].shape[1])):
+                print(f"[*] عرض صفحهٔ جدید ({w}px) با عرض نوار جاری "
+                      f"({int(buf[0].shape[1])}px) فرق دارد؛ نوار جاری جدا شد و "
+                      "صفحهٔ جدید نوار تازهٔ خودش را شروع کرد.")
+                _flush_buffer("تغییر عرض")
+            if not buf:
                 
-                new_h = max(1, int(round(h * (target_w / float(w)))))
-                interp = cv2.INTER_AREA if target_w < w else cv2.INTER_CUBIC
-                im = cv2.resize(im, (target_w, new_h), interpolation=interp)
+                
+                ref = target_w if _width_compatible(w, target_w) else w
+            else:
+                ref = int(buf[0].shape[1])
+            if w != ref:
+                im = _resize_to(im, ref)  
                 h, w = im.shape[:2]
-            if current_pages:
-                current_bounds.append(current_h)
-            current_pages.append(im)
-            current_h += h
-            _cut_and_emit()
+            if buf:
+                buf_bounds.append(buf_h)
+            buf.append(im)
+            buf_h += int(im.shape[0])
+            _cut_loop()
 
-        _cut_and_emit(final=True)
+        _cut_loop()
+
+        if buf:
+            _flush_buffer("پایان فصل" if buf_h < work_h
+                          else "پایان فصل: بزرگ‌تر از هدف، محل برش امن پیدا نشد")
 
         print(
-            f"[*] چسباندن صفحات: {len(image_files)} صفحه → {len(result)} نوار "
-            f"(هدف={work_h}px / نگاه به جلو={lookahead}px"
-            f"{'، صفحهٔ اول جدا (مرز امن)' if keep_first else ''})"
+            f"[*] برش صفحات: {len(image_files)} صفحه → {len(result)} نوار "
+            f"(هدف={work_h}px / سقف={hard_cap}px)"
         )
         return result if result else image_files
 
@@ -7401,7 +7506,7 @@ html, body { background: #0a0a0b; }
 
         src_dir = os.path.join(cache_dir, "src")
         
-        cache_tag = "_safe_v3" if (self.stitch_max_height > 0 or getattr(self, "repair_page_seams", True)) else ""
+        cache_tag = "_safe_v5" if (self.stitch_max_height > 0 or getattr(self, "repair_page_seams", True)) else ""
         out_dir = os.path.join(cache_dir, "out" + cache_tag)
         os.makedirs(src_dir, exist_ok=True)
         os.makedirs(out_dir, exist_ok=True)
@@ -8057,16 +8162,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         "اضافی را خودش فیلتر می‌کند)")
     p.add_argument("--max-chunk-height", type=int, default=3500,
                    help="حداکثر ارتفاع هر تکه OCR داخل یک تصویر (پیکسل)")
-    p.add_argument("--stitch-max-height", type=int, default=8000,
-                   help="۰ = بدون برش مجدد ارتفاع (ترمیم مرز متن همچنان فعال است). عدد دیگر = هدف تقریبی ارتفاع نوار؛ "
-                         "برای حفظ متن و حباب ممکن است خروجی بلندتر شود")
+    p.add_argument("--stitch-max-height", type=int, default=12000,
+                   help="هدف ارتفاع نوار (پیش‌فرض ۱۲۰۰۰). وقتی ارتفاع به هدف رسید، در پنجرهٔ "
+                        "[هدف تا هدف+۲۰۰۰] دنبال برش امن می‌گردد؛ اگر تا سقف ۱۶۰۰۰ محل امنی "
+                        "پیدا نشود، دقیقاً روی ۱۶۰۰۰ برش اجباری زده می‌شود (هیچ نواری بیشتر "
+                        "از ۱۶۰۰۰ ساخته نمی‌شود). نوارهای کوتاه‌تر از هدف با ادامهٔ فصل یکی می‌شوند. "
+                        "۰ = بدون برش مجدد ارتفاع (فقط ترمیم مرز متن)")
     p.add_argument("--no-seam-repair", action="store_true",
                    help="با ارتفاع برش ۰، ترمیم خودکار متن مشترک بین دو تصویر را هم خاموش کن (ممکن است متن نصف شود)")
     p.add_argument("--stitch-short-threshold", type=int, default=0,
-                   help="تنظیم قدیمی: اگر از --stitch-max-height بزرگ‌تر باشد، "
-                        "هدف ارتفاع را افزایش می‌دهد؛ معمولاً ۰ بگذارید")
+                   help="[منسوخ — نادیده گرفته می‌شود] قدیمی‌ها برای افزایش هدف ارتفاع استفاده می‌کردند")
     p.add_argument("--no-stitch-keep-first", action="store_true",
-                   help="صفحهٔ اول را هم داخل نوارها بگذار (پیش‌فرض: فقط اگر مرز آن امن باشد جدا می‌ماند)")
+                   help="[منسوخ — نادیده گرفته می‌شود] صفحهٔ اول هم مثل بقیه داخل جریان نوارها قرار می‌گیرد")
     p.add_argument("--glossary", default=None,
                    help="فایل واژه‌نامهٔ اسامی/اصطلاحات: هر خط «English=فارسی». "
                         "معادل‌ها قفل می‌شوند و اسم‌های جدید خودکار به glossary.json "
@@ -8184,8 +8291,8 @@ def main():
         translation_temperature=args.temperature,
         max_output_width=(args.max_width or None),
         stitch_max_height=args.stitch_max_height,
-        stitch_short_threshold=args.stitch_short_threshold,
-        stitch_keep_first=not args.no_stitch_keep_first,
+        stitch_short_threshold=args.stitch_short_threshold,  
+        stitch_keep_first=not args.no_stitch_keep_first,  
         repair_page_seams=not bool(getattr(args, "no_seam_repair", False)),
         debug=bool(getattr(args, "debug", False)),
         glossary_path=getattr(args, "glossary", None),
