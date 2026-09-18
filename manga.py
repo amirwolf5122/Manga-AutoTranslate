@@ -209,12 +209,22 @@ def _ensure_all_dependencies() -> None:
     if not _can_import("google.genai") and not _can_import("google.generativeai"):
         _pip_install("google-genai")
     if not _can_import("openai"):
-        _pip_install("openai")
+        
+        try:
+            _pip_install("openai")
+        except Exception:
+            pass
 
     
     if not _can_import("paddleocr"):
         print("[*] تلاش برای نصب PaddleOCR (اختیاری، دقت بالاتر) ...")
-        _pip_install("paddleocr")
+        try:
+            
+            ok = _pip_install("paddleocr")
+            if not ok:
+                print("    [!] PaddleOCR نصب نشد — RapidOCR کافی است.")
+        except Exception as e:
+            print(f"    [!] PaddleOCR رد شد: {e}")
         
 
     import platform as _platform
@@ -1100,11 +1110,12 @@ class RapidOCRBackend:
     def __init__(self, lang: str = "en"):
         self.lang = lang
         self._new_api = False
+        self._engine_no_cls = None
         try:
             from rapidocr import RapidOCR as NewRapidOCR
-            self.engine = NewRapidOCR()
+            self.engine = NewRapidOCR(params={"Global.use_cls": False})
             self._new_api = True
-            print(f"[+] RapidOCR (ONNX, PP-OCRv5/v6) آماده | lang={lang}")
+            print(f"[+] RapidOCR (ONNX, PP-OCRv5/v6) آماده | lang={lang} | use_cls=False")
             return
         except Exception:
             pass
@@ -1760,7 +1771,7 @@ class MangaTranslator:
             try:
                 try:
                     engine = PaddleOCR(
-                        use_textline_orientation=True,
+                        use_textline_orientation=False,
                         device=device,
                         enable_mkldnn=False,
                         **ocr_kwargs,
@@ -1768,7 +1779,7 @@ class MangaTranslator:
                 except TypeError:
                     try:
                         engine = PaddleOCR(
-                            use_angle_cls=True,
+                            use_angle_cls=False,
                             use_gpu=ocr_gpu,
                             enable_mkldnn=False,
                             **ocr_kwargs,
@@ -1776,19 +1787,19 @@ class MangaTranslator:
                     except TypeError:
                         try:
                             engine = PaddleOCR(
-                                use_textline_orientation=True,
+                                use_textline_orientation=False,
                                 device=device,
                                 **ocr_kwargs,
                             )
                         except TypeError:
                             engine = PaddleOCR(
-                                use_angle_cls=True,
+                                use_angle_cls=False,
                                 use_gpu=ocr_gpu,
                                 **ocr_kwargs,
                             )
                 self.ocr = PaddleOCRWrapper(engine)
                 self._ocr_backend_name = "paddle"
-                print(f"[+] PaddleOCR آماده | lang={main_lang} | device={device}")
+                print(f"[+] PaddleOCR آماده | lang={main_lang} | device={device} | angle_cls=off")
             except Exception as e:
                 print(f"[!] PaddleOCR لود نشد ({e}) → RapidOCR ONNX")
 
@@ -1822,7 +1833,11 @@ class MangaTranslator:
             print(f"[!] RT-DETR لود نشد ({e}) → OCR تمام‌صفحه (بدون تشخیص حباب)")
             self.det = None
 
-        if self.provider_type == "gemini":
+        if self.clean_only or self.fake_translate:
+            self._model_cascade = [self.model_name]
+            print(f"[*] حالت {'پاکسازی' if self.clean_only else 'fake-translate'} — "
+                  f"API فراخوانی نمی‌شود (provider={self.provider})")
+        elif self.provider_type == "gemini":
             if not _HAS_GEMINI:
                 raise ImportError(
                     "برای استفاده از Gemini باید google-genai نصب باشد:\n"
@@ -4275,6 +4290,35 @@ class MangaTranslator:
         if not text:
             return text
         t = text
+
+        def _looks_reversed_latin(s: str) -> bool:
+            s = s.strip()
+            if not s or len(s) < 3:
+                return False
+            if s.startswith(("¿", "¡")) and any(c.isalpha() for c in s):
+                return True
+            if s[0] in ".?!" and sum(1 for c in s if c.isalpha()) >= 3:
+                return True
+            letters = re.sub(r"[^A-Za-z]", "", s)
+            if len(letters) < 4:
+                return False
+            words = re.findall(r"[A-Za-z]+", s)
+            if not words:
+                return False
+            lower_starts = sum(1 for w in words if w[0].islower())
+            if lower_starts >= max(2, len(words) * 0.6) and s[-1] in ".?!":
+                return True
+            return False
+
+        if _looks_reversed_latin(t):
+            rev = t[::-1]
+            
+            rev = rev.replace("¿", "?").replace("¡", "!")
+            rev = re.sub(r"^([.?!]+)\s*", "", rev)  
+            if rev and rev[0].islower() and any(c.isupper() for c in rev[1:]):
+                
+                pass
+            t = rev
         
         t = re.sub(r"\s+", " ", t).strip()
         
@@ -5288,21 +5332,27 @@ class MangaTranslator:
     }
 
       for r in (getattr(self, "_last_dropped_regions", None) or []):
-        x, y, w, h = r.rect
-        dcol = (255, 0, 0)  
-        cv2.rectangle(vis, (x, y), (x + w, y + h), dcol, 1)
-        cv2.line(vis, (x, y), (x + w, y + h), dcol, 1)
-        cv2.line(vis, (x + w, y), (x, y + h), dcol, 1)
+        x, y, w, h = [int(v) for v in r.rect]
+        dcol = (255, 80, 0)  
+        
+        x2, y2 = min(vis.shape[1] - 1, x + w), min(vis.shape[0] - 1, y + h)
+        if x2 > x and y2 > y:
+            overlay = vis.copy()
+            cv2.rectangle(overlay, (x, y), (x2, y2), dcol, -1)
+            cv2.addWeighted(overlay, 0.28, vis, 0.72, 0, vis)
+        cv2.rectangle(vis, (x, y), (x2, y2), dcol, 3)
+        cv2.line(vis, (x, y), (x2, y2), dcol, 2)
+        cv2.line(vis, (x2, y), (x, y2), dcol, 2)
         label = f"[{r.id}] DROP"
-        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.45, 1)
-        ytop = max(th + 6, y)
-        cv2.rectangle(vis, (x, ytop - th - 6), (x + tw + 4, ytop), dcol, -1)
-        cv2.putText(vis, label, (x + 2, ytop - 4),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1, cv2.LINE_AA)
+        (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+        ytop = max(th + 8, y)
+        cv2.rectangle(vis, (x, ytop - th - 8), (x + tw + 8, ytop), dcol, -1)
+        cv2.putText(vis, label, (x + 4, ytop - 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 2, cv2.LINE_AA)
         short = (r.source_text or "")[:28]
         if short:
-            cv2.putText(vis, short, (x, min(y + h + 14, vis.shape[0] - 4)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.4, dcol, 1, cv2.LINE_AA)
+            cv2.putText(vis, short, (x, min(y + h + 16, vis.shape[0] - 4)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, dcol, 2, cv2.LINE_AA)
 
       for r in regions:
         x, y, w, h = r.rect
@@ -5496,6 +5546,21 @@ class MangaTranslator:
                     entries.append((text, conf, entry_poly))
                 except Exception:
                     continue
+            def _entry_key(e):
+                poly = e[2]
+                if poly is None:
+                    return (0.0, 0.0)
+                p = np.asarray(poly, dtype=np.float32).reshape(-1, 2)
+                cy = float((p[:, 1].min() + p[:, 1].max()) / 2.0)
+                cx = float((p[:, 0].min() + p[:, 0].max()) / 2.0)
+                return (cy, cx)
+            entries.sort(key=_entry_key)
+            lines = [e[0] for e in entries]
+            confs = [e[1] for e in entries]
+            polys = [
+                np.rint(np.asarray(e[2], dtype=np.float32)).astype(np.int32)
+                for e in entries if e[2] is not None
+            ]
             joined = " ".join(lines).strip()
             avg_conf = float(np.mean(confs)) if confs else 0.0
             return joined, polys, avg_conf, entries
@@ -5607,16 +5672,15 @@ class MangaTranslator:
                 break
 
         if merged:
-            hts = []
-            for m_item in merged:
-                mb = _bb_of(m_item[2])
-                if mb is not None:
-                    hts.append(mb[3] - mb[1])
-            row_h = max(8.0, (float(np.median(hts)) if hts else 8.0) * 1.25)
-            merged.sort(key=lambda m_item: (
-                ((_bb_of(m_item[2])[1] if m_item[2] is not None else 0.0) // row_h),
-                (_bb_of(m_item[2])[0] if m_item[2] is not None else 0.0),
-            ))
+            
+            def _sort_key(m_item):
+                bb = _bb_of(m_item[2])
+                if bb is None:
+                    return (0.0, 0.0)
+                cy = (bb[1] + bb[3]) / 2.0
+                cx = (bb[0] + bb[2]) / 2.0
+                return (cy, cx)
+            merged.sort(key=_sort_key)
             u_txt = " ".join(m_item[0] for m_item in merged).strip()
             u_conf = float(np.mean([m_item[1] for m_item in merged])) if merged else 0.0
             u_polys = [
@@ -5624,7 +5688,23 @@ class MangaTranslator:
                 for m_item in merged if m_item[2] is not None
             ]
             scv = _score(u_txt, u_conf)
-            if scv >= best[2]:
+
+            def _looks_natural(s: str) -> bool:
+                s = (s or "").strip()
+                if not s:
+                    return False
+                if s[0].islower() and any(c.isalpha() for c in s):
+                    return False
+                words = re.findall(r"[A-Za-z]+", s)
+                if len(words) >= 3 and not s.isupper():
+                    mid_caps = sum(1 for w in words[1:] if w[0].isupper())
+                    if mid_caps >= 2:
+                        return False
+                return True
+
+            if scv > best[2] + 0.5 and _looks_natural(u_txt):
+                best = (u_txt, u_polys, scv)
+            elif best[2] < 0 and scv > 0:
                 best = (u_txt, u_polys, scv)
 
         
@@ -5996,9 +6076,10 @@ class MangaTranslator:
             r.id = idx
 
         dbg = None
-        if self.debug and unique_regions:
-            dbg = self._draw_debug_regions(image, unique_regions)
-            print(f"  [*] DEBUG: {len(unique_regions)} مربع آماده شد.")
+        if self.debug and (unique_regions or getattr(self, "_last_dropped_regions", None)):
+            dbg = self._draw_debug_regions(image, unique_regions or [])
+            n_drop = len(getattr(self, "_last_dropped_regions", None) or [])
+            print(f"  [*] DEBUG: {len(unique_regions or [])} مربع + {n_drop} DROP آبی آماده شد.")
 
         if unique_regions:
             dialogue_n = sum(1 for r in unique_regions if r.kind == "dialogue")
@@ -6013,9 +6094,10 @@ class MangaTranslator:
 
     def finish_page_phase(self, image: np.ndarray, regions: List[TextRegion],
                           skip_translate: bool = False,
+                          prior_debug: Optional[np.ndarray] = None,
                           ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
         if not regions:
-            return image.copy(), None
+            return image.copy(), prior_debug
 
         page_debug: Optional[np.ndarray] = None
 
@@ -6035,8 +6117,9 @@ class MangaTranslator:
                 print(f"  [*] {len(promo_regions)} تبلیغ هم پاک می‌شود")
             if sfx_regions:
                 print(f"  [*] {len(sfx_regions)} SFX هم پاک می‌شود")
-            if self.debug and regions:
-                page_debug = self._draw_debug_regions(image, regions)
+            
+            if self.debug:
+                page_debug = prior_debug if prior_debug is not None else self._draw_debug_regions(image, regions)
             print("[فاز ۴ - فقط پاکسازی متن] ...")
             if clean_targets:
                 final_image = self.clean_image(image, clean_targets)
@@ -6080,8 +6163,11 @@ class MangaTranslator:
             print(f"  [*] {len(junk_regions)} junk → دست‌نخورده")
 
         
-        if self.debug and regions:
-            page_debug = self._draw_debug_regions(image, regions)
+        if self.debug:
+            
+            page_debug = prior_debug if prior_debug is not None else (
+                self._draw_debug_regions(image, regions) if regions else None
+            )
 
         print("[فاز ۴ - پاکسازی متن + رندر] ...")
         if translated_regions:
@@ -6101,7 +6187,7 @@ class MangaTranslator:
             self._last_debug_image = None
         if not regions:
             return image
-        final_image, _ = self.finish_page_phase(image, regions)
+        final_image, _ = self.finish_page_phase(image, regions, prior_debug=dbg)
         return final_image
 
     @staticmethod
@@ -7222,8 +7308,8 @@ html, body { background: #0a0a0b; }
             print("[!] برش امن به تشخیص حباب نیاز دارد؛ نوارها دست‌نخورده پردازش می‌شوند.")
             return image_files
         target = max(1000, int(self.stitch_max_height))
-        safe_max = min(target + 2000, 16000)
-        hard_cap = 16000
+        hard_cap = 15999
+        safe_max = min(target + 2000, hard_cap)
         os.makedirs(work_dir, exist_ok=True)
         out: List[str] = []
         split_pages = 0
@@ -7257,7 +7343,7 @@ html, body { background: #0a0a0b; }
                             continue
                         cut_y = hard_cap
                         if any(t < cut_y < b for t, b in protected):
-                            print("[!] هشدار: برش اجباری روی سقف ۱۶۰۰۰px وسط حباب/متن افتاد.")
+                            print(f"[!] هشدار: برش اجباری روی سقف {hard_cap}px وسط حباب/متن افتاد.")
                     new_parts.append(part[:cut_y])
                     new_parts.append(part[cut_y:])
                     did_split = True
@@ -7368,7 +7454,7 @@ html, body { background: #0a0a0b; }
         if self.stitch_max_height <= 0:
             return self._repair_page_seams(image_files, work_dir)
 
-        hard_cap = 16000
+        hard_cap = 15999  
 
         os.makedirs(work_dir, exist_ok=True)
         result: List[str] = []
@@ -7742,16 +7828,29 @@ html, body { background: #0a0a0b; }
                 normalized_files = []
                 changed = 0
                 cluster_summary: Dict[int, int] = {}
+                hard_cap_h = 15999
                 for i, f in enumerate(valid_files):
                     im = cv2.imread(f)
                     if im is None:
                         continue
                     orig_w = im.shape[1]
+                    orig_h = im.shape[0]
                     tw = wmap.get(i, orig_w)
                     if 0 < tw < 820 and self.max_output_width in (None, 0):
-                        tw = min(1024, int(round(tw * 1.5)))
+                        cand = min(1024, int(round(tw * 1.5)))
+                        if orig_w > 0 and orig_h * cand / float(orig_w) > hard_cap_h:
+                            cand = max(orig_w, int(hard_cap_h * orig_w / float(orig_h)))
+                            cand = min(cand, 1024)
+                        tw = cand
                     cluster_summary[tw] = cluster_summary.get(tw, 0) + 1
                     im = self._normalize_page_width(im, target_w=tw)
+                    
+                    if im.shape[0] > hard_cap_h:
+                        scale = hard_cap_h / float(im.shape[0])
+                        nw = max(1, int(round(im.shape[1] * scale)))
+                        im = cv2.resize(im, (nw, hard_cap_h), interpolation=cv2.INTER_AREA)
+                        print(f"    [*] صفحه {i+1}: ارتفاع بعد از نرمال‌سازی از سقف رد شد "
+                              f"→ به {hard_cap_h}px کاهش یافت")
                     if im.shape[1] != orig_w:
                         changed += 1
                     ext_n = "." + (getattr(self, "img_format", None) or "webp").lstrip(".")
@@ -7760,6 +7859,7 @@ html, body { background: #0a0a0b; }
                     out_n = os.path.join(norm_dir, f"page_{i+1:03d}{ext_n}")
                     self._write_image(im, out_n)
                     normalized_files.append(out_n)
+                    del im
                 if normalized_files:
                     image_files = normalized_files
                     groups = ", ".join(f"{w}px×{c}" for w, c in sorted(cluster_summary.items()))
@@ -7826,8 +7926,9 @@ html, body { background: #0a0a0b; }
             if not regions:
                 return page_i, out_file, image, dbg
             try:
-                result, page_debug = self.finish_page_phase(image, regions)
-                
+                result, page_debug = self.finish_page_phase(
+                    image, regions, prior_debug=dbg
+                )
                 dbg_out = page_debug if page_debug is not None else dbg
                 return page_i, out_file, result, dbg_out
             except GeminiQuotaExhausted:
@@ -7944,7 +8045,7 @@ html, body { background: #0a0a0b; }
                     results_by_i[page_i] = (out_file, image, dbg)
                     continue
                 result, page_debug = self.finish_page_phase(
-                    image, regions, skip_translate=True
+                    image, regions, skip_translate=True, prior_debug=dbg
                 )
                 dbg_out = page_debug if page_debug is not None else dbg
                 try:
@@ -8238,9 +8339,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
                    help="حداکثر ارتفاع هر تکه OCR داخل یک تصویر (پیکسل)")
     p.add_argument("--stitch-max-height", type=int, default=12000,
                    help="هدف برش امن در فاز استخراج (پیش‌فرض ۱۲۰۰۰). ابتدا صفحات کورکورانه "
-                        "تا سقف ۱۶۰۰۰ چسبانده می‌شوند (بدون چک حباب)؛ بعد در فاز استخراج، "
-                        "نوارهای بلندتر از هدف در پنجرهٔ [هدف تا هدف+۲۰۰۰] روی محل امن "
-                        "شکسته می‌شوند. "
+                        "تا سقف ۱۵۹۹۹ چسبانده می‌شوند (بدون چک حباب)؛ بعد در فاز استخراج، "
+                        "نوارهای بلندتر از هدف در پنجرهٔ [هدف تا هدف+۲۰۰۰] (مثلاً ۱۲۰۰۰–۱۴۰۰۰) "
+                        "روی محل امن شکسته می‌شوند تا حباب/متن نصف نشود. "
                         "۰ = بدون چسباندن/برش (فقط ترمیم مرز متن)")
     p.add_argument("--no-seam-repair", action="store_true",
                    help="با ارتفاع برش ۰، ترمیم خودکار متن مشترک بین دو تصویر را هم خاموش کن (ممکن است متن نصف شود)")
