@@ -2317,6 +2317,8 @@ def run_web():
                     "returncode": None,
                     "buf": [],
                     "t0": None,
+                    "log_frozen": False,   
+                    "last_sent_log": None, 
                 }
             return live_jobs[sid]
 
@@ -2385,7 +2387,7 @@ def run_web():
                     meta = {
                         "sid": sid,
                         "running": _job_running(job),
-                        "log": (job.get("log") or "")[-24000:],
+                        "log": (job.get("log") or "")[-48000:],
                         "ts": job.get("ts") or time.time(),
                         "download_path": job.get("download_path"),
                         "download_debug": job.get("download_debug"),
@@ -2398,6 +2400,7 @@ def run_web():
                         "html_debug": (job.get("html_debug") or "")[:500] and True,
                         "has_debug": bool(job.get("download_debug") or job.get("reader_debug_path")),
                         "want_debug": bool(job.get("want_debug")),
+                        "log_frozen": bool(job.get("log_frozen")),
                     }
                 path = os.path.join(SESS_DIR, f"{sid}.json")
                 with open(path, "w", encoding="utf-8") as f:
@@ -2442,6 +2445,8 @@ def run_web():
                         j["download_debug"] = meta.get("download_debug")
                     if meta.get("want_debug"):
                         j["want_debug"] = meta.get("want_debug")
+                    if meta.get("log_frozen") or ("✅ تمام شد" in (meta.get("log") or "")):
+                        j["log_frozen"] = True
                     j["ts"] = meta.get("ts") or time.time()
                     j["out_v"] = meta.get("out_v")
                     j["src"] = meta.get("src")
@@ -2637,10 +2642,15 @@ def run_web():
             with job["lock"]:
                 cur_log = (job.get("log") or "").rstrip()
             if not cur_log or cur_log.startswith("—"):
-                cur_log = "\n".join(buf[-120:]).strip()
-            final_log = cur_log + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند" + extra
+                cur_log = "\n".join(buf[-800:]).strip() if buf else ""
+            
+            if "✅ تمام شد" not in cur_log and "تمام شد (" not in cur_log:
+                final_log = cur_log + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند" + extra
+            else:
+                final_log = cur_log + extra
             with job["lock"]:
                 job["log"] = final_log
+                job["log_frozen"] = True  
                 job["download_path"] = target
                 job["download_debug"] = download_debug
                 job["html_state"] = reader_html
@@ -2654,9 +2664,13 @@ def run_web():
         def _start_job_reader(sid: str, proc: subprocess.Popen, t0: float) -> None:
             job = _get_job(sid)
 
-            def _fmt(buf_lines):
-                el = int(time.time() - t0)
-                body = "\n".join(buf_lines[-120:]) if buf_lines else "… در حال دریافت خروجی …"
+            def _fmt(buf_lines, elapsed=None):
+                el = int(elapsed if elapsed is not None else (time.time() - t0))
+                body = "\n".join(buf_lines) if buf_lines else "… در حال دریافت خروجی …"
+                
+                if body.count("\n") > 800:
+                    parts = body.split("\n")
+                    body = "…\n" + "\n".join(parts[-800:])
                 return f"⏱ {el // 60}:{el % 60:02d}\n\n{body}"
 
             def _reader():
@@ -2672,6 +2686,8 @@ def run_web():
                         fd = None
                     while True:
                         with job["lock"]:
+                            if job.get("log_frozen"):
+                                break
                             if job.get("proc") is None and not job.get("running"):
                                 break
                         ended = proc.poll() is not None
@@ -2697,15 +2713,17 @@ def run_web():
                                 line, partial = partial.split(b"\n", 1)
                                 text = line.decode("utf-8", "replace").rstrip("\r")
                                 buf.append(text)
-                                if len(buf) > 400:
-                                    del buf[:-300]
+                                
+                                if len(buf) > 1200:
+                                    del buf[:-1000]
                                 with job["lock"]:
+                                    if job.get("log_frozen"):
+                                        break
                                     job["buf"] = buf
                                     job["log"] = _fmt(buf)
                                     job["ts"] = time.time()
                                 n += 1
-                                
-                                if n % 2 == 0:
+                                if n % 5 == 0:
                                     _persist_job_meta(sid)
                         elif ended:
                             break
@@ -2719,7 +2737,8 @@ def run_web():
                         pass
                 except Exception as e:
                     with job["lock"]:
-                        job["log"] = (job.get("log") or "") + f"\n⚠ reader: {e}"
+                        if not job.get("log_frozen"):
+                            job["log"] = (job.get("log") or "") + f"\n⚠ reader: {e}"
                 finally:
                     rc = None
                     try:
@@ -2732,7 +2751,7 @@ def run_web():
                         job["running"] = False
                         job["returncode"] = rc
                         job["buf"] = buf
-                        if buf:
+                        if buf and not job.get("log_frozen"):
                             job["log"] = _fmt(buf)
                         job["ts"] = time.time()
                         job["done_event"] = True
@@ -2741,10 +2760,18 @@ def run_web():
                             _finalize_job_success(sid)
                         except Exception as e:
                             with job["lock"]:
-                                job["log"] = (job.get("log") or "") + f"\n⚠ finalize: {e}"
+                                if not job.get("log_frozen"):
+                                    job["log"] = (job.get("log") or "") + f"\n⚠ finalize: {e}"
+                                    job["log_frozen"] = True
                     elif rc not in (None, 0) and rc not in (-15, -9, 15, 9):
                         with job["lock"]:
-                            job["log"] = (job.get("log") or "") + f"\n\n❌ خطا — کد خروج {rc}"
+                            if not job.get("log_frozen"):
+                                job["log"] = (job.get("log") or "") + f"\n\n❌ خطا — کد خروج {rc}"
+                                job["log_frozen"] = True
+                    else:
+                        
+                        with job["lock"]:
+                            job["log_frozen"] = True
                     _persist_job_meta(sid)
 
             threading.Thread(target=_reader, daemon=True, name=f"manga-job-{sid[:8]}").start()
@@ -2752,7 +2779,7 @@ def run_web():
             def _heartbeat():
                 while True:
                     with job["lock"]:
-                        if not _job_running(job):
+                        if job.get("log_frozen") or not _job_running(job):
                             break
                         buf = list(job.get("buf") or [])
                         job["log"] = _fmt(buf)
@@ -3338,6 +3365,8 @@ def run_web():
                 job["src"] = src
                 job["running"] = True
                 job["want_debug"] = bool(web_debug_v)
+                job["log_frozen"] = False
+                job["last_sent_log"] = None
                 job["log"] = "⏱ 0:00\n\n▶ در حال شروع…"
                 job["ts"] = time.time()
 
@@ -3472,18 +3501,21 @@ def run_web():
                 mem_log = job.get("log") or ""
                 meta_log = meta.get("log") or ""
                 default_log = "— لاگ بعد از شروع ترجمه اینجا می‌آید —"
+                frozen = bool(job.get("log_frozen")) or ("✅ تمام شد" in mem_log) or ("✅ تمام شد" in meta_log)
 
-                candidates = []
-                if mem_log and mem_log != default_log and not mem_log.startswith("—"):
-                    candidates.append(mem_log)
-                if meta_log and meta_log != default_log:
-                    candidates.append(meta_log)
-                if client_log and client_log != default_log and not client_log.startswith("—"):
-                    candidates.append(client_log)
-
-                if candidates:
-                    
-                    job["log"] = max(candidates, key=len)
+                
+                if not frozen:
+                    candidates = []
+                    if mem_log and mem_log != default_log and not mem_log.startswith("—"):
+                        candidates.append(mem_log)
+                    if meta_log and meta_log != default_log:
+                        candidates.append(meta_log)
+                    if client_log and client_log != default_log and not client_log.startswith("—"):
+                        candidates.append(client_log)
+                    if candidates:
+                        job["log"] = max(candidates, key=len)
+                elif frozen:
+                    job["log_frozen"] = True
 
                 if meta.get("download_path") and not job.get("download_path"):
                     job["download_path"] = meta.get("download_path")
@@ -3676,14 +3708,17 @@ def run_web():
             job = _get_job(sid)
             meta = _load_job_meta(sid)
             with job["lock"]:
+                frozen = bool(job.get("log_frozen"))
                 mem_log = job.get("log") or ""
                 meta_log = meta.get("log") or ""
                 
-                mem_done = ("تمام شد" in mem_log) or ("✅" in mem_log)
-                if meta_log and not mem_done and (
+                mem_done = frozen or ("تمام شد" in mem_log) or ("✅" in mem_log)
+                
+                if (not frozen) and meta_log and not mem_done and (
                     len(meta_log) > len(mem_log) or not mem_log or mem_log.startswith("—")
                 ):
                     job["log"] = meta_log
+                    mem_log = meta_log
                 if meta.get("result_visible") and not job.get("result_visible"):
                     job["result_visible"] = True
                 if meta.get("download_path") and not job.get("download_path"):
@@ -3696,6 +3731,11 @@ def run_web():
                     job["reader_debug_path"] = meta.get("reader_debug_path")
                 running = _job_running(job)
                 log = job.get("log") or ""
+                
+                last_sent = job.get("last_sent_log")
+                log_changed = (log != last_sent)
+                if log_changed:
+                    job["last_sent_log"] = log
                 vis = bool(job.get("result_visible"))
                 dl = job.get("download_path")
                 dl_dbg = job.get("download_debug")
@@ -3712,7 +3752,7 @@ def run_web():
                 gr.update(value=sid),
                 gr.update(value=sid),
                 gr.update(value=btn),
-                gr.update(value=log) if log else gr.update(),
+                gr.update(value=log) if (log and log_changed) else gr.update(),
                 gr.update(value=dl, visible=vis) if vis else gr.update(),
                 gr.update(visible=vis),
                 gr.update(visible=vis),
