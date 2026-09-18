@@ -1298,14 +1298,14 @@ def run_desktop():
             cands = [
                 out_v if os.path.isdir(out_v) else "",
             ]
-            _cache_subs = ("out", "out_safe_v3", "debug", "debug_safe_v3")
+            _cache_subs = ("out", "out_safe_v3", "out_safe_v4", "out_safe_v5", "out_safe_v6")
             try:
                 cache_root = out_v + ".cache"
                 if os.path.isdir(cache_root):
                     for sub in _cache_subs:
                         cands.append(os.path.join(cache_root, sub))
                     for name in os.listdir(cache_root):
-                        if name.startswith("out") or name.startswith("debug"):
+                        if name.startswith("out"):
                             cands.append(os.path.join(cache_root, name))
             except Exception:
                 pass
@@ -1317,7 +1317,7 @@ def run_desktop():
                             cands.append(os.path.join(cr, sub))
                         try:
                             for subn in os.listdir(cr):
-                                if subn.startswith("out") or subn.startswith("debug"):
+                                if subn.startswith("out"):
                                     cands.append(os.path.join(cr, subn))
                         except Exception:
                             pass
@@ -2534,39 +2534,35 @@ def run_web():
                 return out
 
             parent = os.path.dirname(str(out_v)) or "."
-            search_dirs = [
-                out_v if os.path.isdir(out_v) else None,
-            ]
-            _cache_subs = ("out", "out_safe_v3", "debug", "debug_safe_v3")
-            try:
+
+            def _cache_dirs(prefix):
+                dirs = []
+                roots = []
                 cache_root = str(out_v) + ".cache"
                 if os.path.isdir(cache_root):
-                    for sub in _cache_subs:
-                        search_dirs.append(os.path.join(cache_root, sub))
-                    for name in os.listdir(cache_root):
-                        if name.startswith("out") or name.startswith("debug"):
-                            search_dirs.append(os.path.join(cache_root, name))
-            except Exception:
-                pass
-            try:
-                for name in os.listdir(parent):
-                    if name.endswith(".cache"):
-                        cr = os.path.join(parent, name)
-                        for sub in _cache_subs:
-                            search_dirs.append(os.path.join(cr, sub))
-                        try:
-                            for subn in os.listdir(cr):
-                                if subn.startswith("out") or subn.startswith("debug"):
-                                    search_dirs.append(os.path.join(cr, subn))
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-            cache_debug = os.path.join(str(out_v) + ".cache", "debug_safe_v3")
-            if not os.path.isdir(cache_debug):
-                cache_debug = os.path.join(str(out_v) + ".cache", "debug")
+                    roots.append(cache_root)
+                try:
+                    for name in os.listdir(parent):
+                        if name.endswith(".cache"):
+                            cr = os.path.join(parent, name)
+                            if os.path.isdir(cr) and cr not in roots:
+                                roots.append(cr)
+                except Exception:
+                    pass
+                for cr in roots:
+                    try:
+                        for name in os.listdir(cr):
+                            p = os.path.join(cr, name)
+                            if os.path.isdir(p) and name.startswith(prefix):
+                                dirs.append(p)
+                    except Exception:
+                        pass
+                return dirs
 
-            imgs = _collect_imgs(search_dirs)
+            out_dirs = [out_v if os.path.isdir(out_v) else None] + _cache_dirs("out")
+            dbg_dirs = _cache_dirs("debug")
+
+            imgs = _collect_imgs(out_dirs)
             if not imgs and str(target).lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
                 imgs = [target]
 
@@ -2588,7 +2584,7 @@ def run_web():
 
             
             if not debug_imgs:
-                debug_imgs = _collect_imgs([cache_debug])
+                debug_imgs = _collect_imgs(dbg_dirs)
 
             try:
                 reader_html = build_reader_html(imgs, standalone=True)
@@ -2635,7 +2631,11 @@ def run_web():
                 extra = "\n⚠ تصاویر برای نمایشگر پیدا نشد — فقط دانلود فعال است."
             if debug_imgs or download_debug:
                 extra += f"\n🔍 دیباگ: {len(debug_imgs)} صفحه آماده نمایش/دانلود"
-            final_log = "\n".join(buf[-120:]) + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند" + extra
+            with job["lock"]:
+                cur_log = (job.get("log") or "").rstrip()
+            if not cur_log or cur_log.startswith("—"):
+                cur_log = "\n".join(buf[-120:]).strip()
+            final_log = cur_log + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند" + extra
             with job["lock"]:
                 job["log"] = final_log
                 job["download_path"] = target
@@ -2881,7 +2881,8 @@ def run_web():
     }}
 
     let keepLog = log;
-    if (prevLog && log && prevLog.length > log.length + 40) {{
+    const doneNow = (log || "").indexOf("تمام شد") >= 0 || (log || "").indexOf("✅") >= 0;
+    if (!doneNow && prevLog && log && prevLog.length > log.length + 40) {{
       keepLog = prevLog;
     }}
     if (prevLog && (!log || log.indexOf("— لاگ بعد") === 0)) {{
@@ -3004,7 +3005,34 @@ def run_web():
       || document.querySelector('[id*="manga_sid"] input');
   }};
 
+  const pinLog = () => {{
+    const el = findLogEl();
+    if (!el || el._mangaPinned) return;
+    el._mangaPinned = true;
+    el._stick = true;
+    el.addEventListener("scroll", () => {{
+      try {{ el._stick = (el.scrollHeight - el.scrollTop - el.clientHeight) < 60; }} catch (e) {{}}
+    }}, {{ passive: true }});
+    try {{
+      const d = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
+      if (d && d.set && d.get) {{
+        Object.defineProperty(el, "value", {{
+          get() {{ return d.get.call(el); }},
+          set(v) {{
+            const prev = d.get.call(el);
+            d.set.call(el, v);
+            if (String(v) !== String(prev) && el._stick !== false) {{
+              try {{ el.scrollTop = el.scrollHeight; }} catch (e) {{}}
+            }}
+          }},
+          configurable: true
+        }});
+      }}
+    }} catch (e) {{}}
+  }};
+
   const apply = () => {{
+    pinLog();
     try {{
       let job = {{}};
       try {{ job = JSON.parse(localStorage.getItem(JOB) || "{{}}"); }} catch (e) {{ job = {{}}; }}
@@ -3097,6 +3125,7 @@ def run_web():
 
   apply();
   [100, 300, 600, 1000, 2000, 3500, 5000].forEach((t) => setTimeout(apply, t));
+  setInterval(pinLog, 1000);
 
   try {{
     const saveFromDom = () => {{
@@ -3118,7 +3147,8 @@ def run_web():
         if (job.running && !runningNow && job.log && log.length <= job.log.length + 5) {{
           return;
         }}
-        if (job.log && job.log.length > log.length + 50) return;
+        const domDone = (log || "").indexOf("تمام شد") >= 0 || (log || "").indexOf("✅") >= 0;
+        if (job.log && job.log.length > log.length + 50 && !domDone) return;
         job.sid = sid;
         job.log = (job.log && job.log.length > log.length) ? job.log : log;
         job.ts = Date.now();
@@ -3304,6 +3334,7 @@ def run_web():
                 job["out_v"] = out_v
                 job["src"] = src
                 job["running"] = True
+                job["want_debug"] = bool(web_debug_v)
                 job["log"] = "⏱ 0:00\n\n▶ در حال شروع…"
                 job["ts"] = time.time()
 
@@ -3644,7 +3675,10 @@ def run_web():
             with job["lock"]:
                 mem_log = job.get("log") or ""
                 meta_log = meta.get("log") or ""
-                if meta_log and (len(meta_log) > len(mem_log) or not mem_log or mem_log.startswith("—")):
+                mem_done = ("تمام شد" in mem_log) or ("✅" in mem_log)
+                if meta_log and not mem_done and (
+                    len(meta_log) > len(mem_log) or not mem_log or mem_log.startswith("—")
+                ):
                     job["log"] = meta_log
                 if meta.get("result_visible") and not job.get("result_visible"):
                     job["result_visible"] = True
