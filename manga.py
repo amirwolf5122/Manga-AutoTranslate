@@ -5316,8 +5316,6 @@ class MangaTranslator:
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
       vis = image.copy()
 
-      
-
       colors = {
         "dialogue": (0, 0, 255),      
         "promo": (0, 165, 255),       
@@ -6016,7 +6014,6 @@ class MangaTranslator:
                 if self.debug:
                     msg += " → در خروجی دیباگ با رنگ آبی (DROP) مشخص می‌شوند"
                 print(msg)
-            
             regions = kept
 
         print(f"    [*] RT-DETR: {n0} خام → {before} OCR → {len(regions)} نهایی")
@@ -7211,15 +7208,14 @@ html, body { background: #0a0a0b; }
         search_radius: int = 900,
         protected_ranges: Optional[List[Tuple[int, int]]] = None,
     ) -> Optional[int]:
-        
         if strip is None or strip.size == 0:
             return None
         if protected_ranges is None:
             protected_ranges = []
         ih, iw = strip.shape[:2]
-        
-        clearance = max(40, int(round(iw * 0.05)))
-        edge_margin = max(50, int(round(iw * 0.06)))
+
+        clearance = max(48, int(round(iw * 0.06)))
+        edge_margin = max(80, int(round(iw * 0.10)))  
         y0 = max(int(min_y), int(target_y) - int(search_radius), clearance + edge_margin)
         y1 = min(int(max_y), int(target_y) + int(search_radius), ih - clearance - edge_margin)
         if y1 < y0:
@@ -7234,40 +7230,63 @@ html, body { background: #0a0a0b; }
 
         row_min = band.min(axis=1).astype(np.int16)
         row_max = band.max(axis=1).astype(np.int16)
-        uniform = np.all(row_max - row_min <= 14, axis=1)
+        
+        uniform = np.all(row_max - row_min <= 12, axis=1)
         mean = gray.mean(axis=1)
         
-        paper = (mean >= 230) | (mean <= 20)
+        paper = (mean >= 225) | (mean <= 18)
         empty = uniform & paper
 
+        dark_ratio = (gray < 140).mean(axis=1)
+        ink_barrier = dark_ratio > 0.02  
+
         for top, bottom in protected_ranges:
-            lo = max(0, int(top) - wy0 - edge_margin)
-            hi = min(len(empty), int(bottom) - wy0 + 1 + edge_margin)
+            
+            pad = max(edge_margin, 100)
+            lo = max(0, int(top) - wy0 - pad)
+            hi = min(len(empty), int(bottom) - wy0 + 1 + pad)
             if lo < hi:
                 empty[lo:hi] = False
 
-        edges = cv2.Canny(gray, 40, 120)
+        edges = cv2.Canny(gray, 30, 100)
         edge_ratio = (edges > 0).mean(axis=1)
-        barrier = (edge_ratio > 0.012) | (~empty)
+        barrier = (edge_ratio > 0.008) | (~empty) | ink_barrier
         dil = barrier.copy()
-        for i in range(1, edge_margin + 1):
+        
+        expand = max(edge_margin, 60)
+        for i in range(1, expand + 1):
             dil[:-i] |= barrier[i:]
             dil[i:] |= barrier[:-i]
-        safe = empty & ~dil
+        safe = empty & ~dil & ~ink_barrier
 
         edges_idx = np.flatnonzero(np.diff(np.r_[False, safe, False].astype(np.int8)))
         candidates = []
-        min_run = max(2 * clearance, 60)
+        min_run = max(2 * clearance, 80)  
         for start, end in zip(edges_idx[::2], edges_idx[1::2]):
             if end - start < min_run:
                 continue
-            for s in range(start, end):
+            
+            mid_lo = start + clearance // 2
+            mid_hi = end - clearance // 2
+            if mid_hi <= mid_lo:
+                continue
+            for s in range(mid_lo, mid_hi):
                 cy = wy0 + s
                 if y0 <= cy <= y1:
                     candidates.append(int(cy))
         if not candidates:
             return None
         candidates = sorted(set(candidates))
+
+        def _ok(y: int) -> bool:
+            for t, b in protected_ranges:
+                if t - edge_margin <= y <= b + edge_margin:
+                    return False
+            return True
+
+        candidates = [y for y in candidates if _ok(y)]
+        if not candidates:
+            return None
         return min(candidates, key=lambda y: abs(y - target_y))
 
     def _scan_protected_ranges(self, strip: np.ndarray, y0: int, y1: int) -> List[Tuple[int, int]]:
@@ -7280,10 +7299,17 @@ html, body { background: #0a0a0b; }
         y1 = min(ih, int(y1))
         if y1 <= y0:
             return ranges
-        padding = max(40, int(round(strip.shape[1] * 0.05)))
-        start = max(0, y0 - 300)
-        for top in range(start, y1, 1160):
-            bottom = min(ih, top + 1680)
+        
+        padding = max(80, int(round(strip.shape[1] * 0.12)))
+        
+        start = max(0, y0 - 500)
+        end = min(ih, y1 + 500)
+        step = 800
+        win = 1400
+        for top in range(start, end, step):
+            bottom = min(ih, top + win)
+            if bottom - top < 200:
+                continue
             try:
                 boxes = self.det.detect(strip[top:bottom])
             except Exception as exc:
@@ -7291,7 +7317,17 @@ html, body { background: #0a0a0b; }
             for box in boxes:
                 _, by1, _, by2 = box["rect"]
                 ranges.append((top + by1 - padding, top + by2 + padding))
-        return ranges
+        
+        if not ranges:
+            return ranges
+        ranges.sort()
+        merged = [list(ranges[0])]
+        for a, b in ranges[1:]:
+            if a <= merged[-1][1] + 20:
+                merged[-1][1] = max(merged[-1][1], b)
+            else:
+                merged.append([a, b])
+        return [(int(a), int(b)) for a, b in merged]
 
     def _safe_split_strips(self, image_files: List[str], work_dir: str) -> List[str]:
         if not image_files:
@@ -7333,9 +7369,21 @@ html, body { background: #0a0a0b; }
                         if ph <= hard_cap:
                             new_parts.append(part)
                             continue
-                        cut_y = hard_cap
-                        if any(t < cut_y < b for t, b in protected):
-                            print(f"[!] هشدار: برش اجباری روی سقف {hard_cap}px وسط حباب/متن افتاد.")
+                        
+                        forced = None
+                        for delta in range(0, 2500, 25):
+                            for cand in (hard_cap - delta, hard_cap + delta):
+                                if 500 < cand < ph - 50 and not any(t < cand < b for t, b in protected):
+                                    forced = cand
+                                    break
+                            if forced is not None:
+                                break
+                        if forced is None:
+                            print(f"[!] محل امن برای نوار {ph}px پیدا نشد — بدون برش رها شد تا حباب نصف نشود.")
+                            new_parts.append(part)
+                            continue
+                        cut_y = forced
+                        print(f"[*] برش خارج‌حباب نزدیک سقف: y={cut_y}")
                     new_parts.append(part[:cut_y])
                     new_parts.append(part[cut_y:])
                     did_split = True
@@ -7978,26 +8026,71 @@ html, body { background: #0a0a0b; }
             oh = int(img.shape[0])
             if oh <= safe_max:
                 return img, None
+            
             protected = []
             if self.det is not None:
                 try:
                     protected = self._scan_protected_ranges(
-                        img, target_h - 1000, min(safe_max + 800, oh)
+                        img, max(0, target_h - 2500), min(oh, MAX_COMBINED + 500)
                     )
                 except Exception as e:
                     print(f"    [!] scan protected: {e}")
-            cut_y = self._find_safe_cut_y(
-                img, target_h, target_h, min(safe_max, oh),
-                search_radius=max(safe_max - target_h, 512),
-                protected_ranges=protected,
-            )
+            
+            cut_y = None
+            for radius in (max(safe_max - target_h, 800), 1500, 2500, 3500):
+                cut_y = self._find_safe_cut_y(
+                    img, target_h, max(1000, target_h - radius),
+                    min(MAX_COMBINED, oh - 50),
+                    search_radius=radius,
+                    protected_ranges=protected,
+                )
+                if cut_y is not None:
+                    break
+            if cut_y is None:
+                
+                try:
+                    import cv2 as _cv
+                    import numpy as _np
+                    y_lo = max(1000, target_h - 2000)
+                    y_hi = min(oh - 50, MAX_COMBINED)
+                    if y_hi > y_lo + 100:
+                        gray = _cv.cvtColor(img[y_lo:y_hi], _cv.COLOR_BGR2GRAY)
+                        ink = (gray < 140).mean(axis=1)
+                        order = list(_np.argsort(ink))  
+                        for idx in order[:80]:
+                            cy = int(y_lo + idx)
+                            hit = any(t - 60 <= cy <= b + 60 for t, b in protected)
+                            if not hit and float(ink[idx]) < 0.015:
+                                cut_y = cy
+                                print(f"[*] برش امن (fallback کم‌جوهر): y={cut_y}")
+                                break
+                except Exception as e:
+                    print(f"    [!] fallback cut: {e}")
             if cut_y is None:
                 if oh > MAX_COMBINED:
-                    cut_y = MAX_COMBINED
-                    print(f"[!] محل امن پیدا نشد؛ برش اجباری {MAX_COMBINED}px")
+                    
+                    forced = MAX_COMBINED
+                    for delta in range(0, 2000, 20):
+                        for cand in (forced - delta, forced + delta):
+                            if 500 < cand < oh - 50:
+                                hit = any(t - 40 <= cand <= b + 40 for t, b in protected)
+                                if not hit:
+                                    cut_y = cand
+                                    print(f"[!] محل خالی ایده‌آل نبود؛ برش خارج حباب y={cut_y}")
+                                    break
+                        if cut_y is not None:
+                            break
+                    if cut_y is None:
+                        print(f"[!] هیچ محل امنی پیدا نشد — برش انجام نشد تا حباب نصف نشود "
+                              f"(ارتفاع={oh}px)")
+                        return img, None
                 else:
                     return img, None
             if not (0 < cut_y < oh):
+                return img, None
+            
+            if any(t < cut_y < b for t, b in protected):
+                print(f"[!] y={cut_y} هنوز داخل حباب بود — برش لغو شد")
                 return img, None
             head, tail = img[:cut_y], img[cut_y:]
             print(
@@ -8036,6 +8129,7 @@ html, body { background: #0a0a0b; }
         seq = 0
 
         def _append_to_acc(piece, name):
+            
             nonlocal acc, acc_name
             if piece is None or piece.size == 0:
                 return None
@@ -8084,6 +8178,8 @@ html, body { background: #0a0a0b; }
                 start_qi = 1
             finally:
                 MangaTranslator._title_skip_enabled = False
+
+        
         for qi in range(start_qi, n_pending):
             page_i, f, out_file = pending[qi]
             is_last = (qi == n_pending - 1)
