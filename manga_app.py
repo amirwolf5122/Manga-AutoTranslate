@@ -1299,29 +1299,22 @@ def run_desktop():
                 out_v if os.path.isdir(out_v) else "",
             ]
             
-            _cache_subs = ("out", "out_safe_v3", "out_safe_v4", "out_safe_v5", "out_safe_v6")
+            
             try:
                 cache_root = out_v + ".cache"
+                ranked = []
                 if os.path.isdir(cache_root):
-                    for sub in _cache_subs:
-                        cands.append(os.path.join(cache_root, sub))
                     for name in os.listdir(cache_root):
                         if name.startswith("out"):
-                            cands.append(os.path.join(cache_root, name))
-            except Exception:
-                pass
-            try:
-                for name in os.listdir(parent):
-                    if name.endswith(".cache"):
-                        cr = os.path.join(parent, name)
-                        for sub in _cache_subs:
-                            cands.append(os.path.join(cr, sub))
-                        try:
-                            for subn in os.listdir(cr):
-                                if subn.startswith("out"):
-                                    cands.append(os.path.join(cr, subn))
-                        except Exception:
-                            pass
+                            p = os.path.join(cache_root, name)
+                            if os.path.isdir(p):
+                                try:
+                                    ranked.append((os.path.getmtime(p), p))
+                                except Exception:
+                                    ranked.append((0, p))
+                ranked.sort(reverse=True)
+                for _, p in ranked:
+                    cands.append(p)
             except Exception:
                 pass
             rd = ""
@@ -1479,6 +1472,27 @@ def run_desktop():
             with open(instr_path, "w", encoding="utf-8") as _inf:
                 _inf.write(instr_text + "\n")
             cmd += ["--instruction", instr_path]
+
+        
+        try:
+            if os.path.isfile(out_v):
+                os.remove(out_v)
+            elif os.path.isdir(out_v):
+                shutil.rmtree(out_v, ignore_errors=True)
+            _cr = str(out_v) + ".cache"
+            if os.path.isdir(_cr):
+                shutil.rmtree(_cr, ignore_errors=True)
+            for suf in ("_debug.pdf", "_debug.zip", "_debug.html", "_debug.psd", "_debug_imgs.zip"):
+                p = os.path.splitext(str(out_v))[0] + suf
+                if os.path.isfile(p):
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+        except Exception as _e:
+            log_write(f"[!] پاکسازی خروجی قبلی: {_e}")
+        if "--no-resume" not in cmd:
+            cmd.append("--no-resume")
 
         log_box.config(state="normal")
         log_box.delete("1.0", "end")
@@ -2542,32 +2556,37 @@ def run_web():
             parent = os.path.dirname(str(out_v)) or "."
 
             def _cache_dirs(prefix):
-                
                 dirs = []
-                roots = []
                 cache_root = str(out_v) + ".cache"
-                if os.path.isdir(cache_root):
-                    roots.append(cache_root)
+                if not os.path.isdir(cache_root):
+                    return dirs
                 try:
-                    for name in os.listdir(parent):
-                        if name.endswith(".cache"):
-                            cr = os.path.join(parent, name)
-                            if os.path.isdir(cr) and cr not in roots:
-                                roots.append(cr)
+                    names = [n for n in os.listdir(cache_root)
+                             if n.startswith(prefix) and os.path.isdir(os.path.join(cache_root, n))]
                 except Exception:
-                    pass
-                for cr in roots:
+                    return dirs
+                ranked = []
+                for name in names:
+                    p = os.path.join(cache_root, name)
                     try:
-                        for name in os.listdir(cr):
-                            p = os.path.join(cr, name)
-                            if os.path.isdir(p) and name.startswith(prefix):
-                                dirs.append(p)
+                        ranked.append((os.path.getmtime(p), p))
                     except Exception:
-                        pass
+                        ranked.append((0, p))
+                ranked.sort(reverse=True)
+                if ranked:
+                    dirs.append(ranked[0][1])
                 return dirs
 
             out_dirs = [out_v if os.path.isdir(out_v) else None] + _cache_dirs("out")
             dbg_dirs = _cache_dirs("debug")
+
+            for _vd in ("_pdf_view", "_debug_view"):
+                _vp = os.path.join(parent, _vd)
+                if os.path.isdir(_vp):
+                    try:
+                        shutil.rmtree(_vp, ignore_errors=True)
+                    except Exception:
+                        pass
 
             imgs = _collect_imgs(out_dirs)
             if not imgs and str(target).lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
@@ -2641,8 +2660,12 @@ def run_web():
             
             with job["lock"]:
                 cur_log = (job.get("log") or "").rstrip()
-            if not cur_log or cur_log.startswith("—"):
-                cur_log = "\n".join(buf[-800:]).strip() if buf else ""
+            
+            if not cur_log or cur_log.startswith("—") or cur_log.startswith("⏱ 0:00"):
+                
+                if buf:
+                    body = "\n".join(buf[-800:]).strip()
+                    cur_log = f"⏱ {dur_s}\n\n{body}" if body else cur_log
             
             if "✅ تمام شد" not in cur_log and "تمام شد (" not in cur_log:
                 final_log = cur_log + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند" + extra
@@ -3347,6 +3370,35 @@ def run_web():
                 cmd += ["--glossary", glos_path]
             if not story_brief_v:
                 cmd += ["--no-brief"]
+
+            
+            try:
+                if out_v and os.path.isfile(out_v):
+                    os.remove(out_v)
+                elif out_v and os.path.isdir(out_v):
+                    shutil.rmtree(out_v, ignore_errors=True)
+                cache_root = str(out_v) + ".cache"
+                if os.path.isdir(cache_root):
+                    shutil.rmtree(cache_root, ignore_errors=True)
+                for suf in ("_debug.pdf", "_debug.zip", "_debug.html", "_debug.psd",
+                            "_debug_imgs.zip"):
+                    p = os.path.splitext(str(out_v))[0] + suf
+                    if os.path.isfile(p):
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+                parent_o = os.path.dirname(str(out_v)) or "."
+                for _vd in ("_pdf_view", "_debug_view"):
+                    _vp = os.path.join(parent_o, _vd)
+                    if os.path.isdir(_vp):
+                        shutil.rmtree(_vp, ignore_errors=True)
+            except Exception as _ce:
+                print(f"[!] پاکسازی خروجی قبلی: {_ce}")
+
+            
+            if "--no-resume" not in cmd:
+                cmd += ["--no-resume"]
 
             t0 = time.time()
             with job["lock"]:
