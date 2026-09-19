@@ -6013,7 +6013,6 @@ class MangaTranslator:
                 if self.debug:
                     msg += " → در خروجی دیباگ با رنگ آبی (DROP) مشخص می‌شوند"
                 print(msg)
-            
             regions = kept
 
         print(f"    [*] RT-DETR: {n0} خام → {before} OCR → {len(regions)} نهایی")
@@ -7230,18 +7229,14 @@ html, body { background: #0a0a0b; }
 
         row_min = band.min(axis=1).astype(np.int16)
         row_max = band.max(axis=1).astype(np.int16)
-        
         uniform = np.all(row_max - row_min <= 12, axis=1)
         mean = gray.mean(axis=1)
-        
         paper = (mean >= 225) | (mean <= 18)
         empty = uniform & paper
-
         dark_ratio = (gray < 140).mean(axis=1)
         ink_barrier = dark_ratio > 0.02  
 
         for top, bottom in protected_ranges:
-            
             pad = max(edge_margin, 100)
             lo = max(0, int(top) - wy0 - pad)
             hi = min(len(empty), int(bottom) - wy0 + 1 + pad)
@@ -7252,7 +7247,6 @@ html, body { background: #0a0a0b; }
         edge_ratio = (edges > 0).mean(axis=1)
         barrier = (edge_ratio > 0.008) | (~empty) | ink_barrier
         dil = barrier.copy()
-        
         expand = max(edge_margin, 60)
         for i in range(1, expand + 1):
             dil[:-i] |= barrier[i:]
@@ -7265,7 +7259,6 @@ html, body { background: #0a0a0b; }
         for start, end in zip(edges_idx[::2], edges_idx[1::2]):
             if end - start < min_run:
                 continue
-            
             mid_lo = start + clearance // 2
             mid_hi = end - clearance // 2
             if mid_hi <= mid_lo:
@@ -7290,7 +7283,6 @@ html, body { background: #0a0a0b; }
         return min(candidates, key=lambda y: abs(y - target_y))
 
     def _scan_protected_ranges(self, strip: np.ndarray, y0: int, y1: int) -> List[Tuple[int, int]]:
-        
         ranges: List[Tuple[int, int]] = []
         if self.det is None:
             return ranges
@@ -7299,16 +7291,18 @@ html, body { background: #0a0a0b; }
         y1 = min(ih, int(y1))
         if y1 <= y0:
             return ranges
-        
-        padding = max(80, int(round(strip.shape[1] * 0.12)))
-        
-        start = max(0, y0 - 500)
-        end = min(ih, y1 + 500)
-        step = 800
-        win = 1400
-        for top in range(start, end, step):
-            bottom = min(ih, top + win)
-            if bottom - top < 200:
+        padding = max(60, int(round(strip.shape[1] * 0.08)))
+        span = y1 - y0
+        if span <= 1800:
+            windows = [(max(0, y0 - 50), min(ih, y1 + 50))]
+        else:
+            mid = (y0 + y1) // 2
+            windows = [
+                (max(0, y0 - 50), min(ih, mid + 200)),
+                (max(0, mid - 200), min(ih, y1 + 50)),
+            ]
+        for top, bottom in windows:
+            if bottom - top < 100:
                 continue
             try:
                 boxes = self.det.detect(strip[top:bottom])
@@ -7317,7 +7311,6 @@ html, body { background: #0a0a0b; }
             for box in boxes:
                 _, by1, _, by2 = box["rect"]
                 ranges.append((top + by1 - padding, top + by2 + padding))
-        
         if not ranges:
             return ranges
         ranges.sort()
@@ -7329,15 +7322,18 @@ html, body { background: #0a0a0b; }
                 merged.append([a, b])
         return [(int(a), int(b)) for a, b in merged]
 
+
     def _safe_split_strips(self, image_files: List[str], work_dir: str) -> List[str]:
         if not image_files:
             return image_files
         if self.det is None:
             print("[!] برش امن به تشخیص حباب نیاز دارد؛ نوارها دست‌نخورده پردازش می‌شوند.")
             return image_files
-        target = max(1000, int(self.stitch_max_height))
         hard_cap = 16000
-        safe_max = min(target + 2000, hard_cap)
+        target = min(hard_cap, max(1000, int(self.stitch_max_height) or hard_cap))
+        if target < hard_cap:
+            target = hard_cap  
+        safe_max = hard_cap
         os.makedirs(work_dir, exist_ok=True)
         out: List[str] = []
         split_pages = 0
@@ -7359,31 +7355,85 @@ html, body { background: #0a0a0b; }
                     if ph <= safe_max:
                         new_parts.append(part)
                         continue
-                    protected = self._scan_protected_ranges(part, target - 1000, min(safe_max + 800, ph))
-                    cut_y = self._find_safe_cut_y(
-                        part, target, target, min(safe_max, ph),
-                        search_radius=max(safe_max - target, 512),
-                        protected_ranges=protected,
-                    )
-                    if cut_y is None:
+                    y_lo = 14000
+                    y_hi = min(ph - 40, 16000)
+                    if y_hi <= y_lo + 50:
                         if ph <= hard_cap:
                             new_parts.append(part)
                             continue
-                        
-                        forced = None
-                        for delta in range(0, 2500, 25):
-                            for cand in (hard_cap - delta, hard_cap + delta):
-                                if 500 < cand < ph - 50 and not any(t < cand < b for t, b in protected):
-                                    forced = cand
+                        y_lo = max(500, ph - 2000)
+                        y_hi = ph - 40
+                    protected = self._scan_protected_ranges(part, y_lo, y_hi)
+                    target_y = (y_lo + y_hi) // 2
+                    cut_y = self._find_safe_cut_y(
+                        part, target_y, y_lo, y_hi,
+                        search_radius=max(y_hi - y_lo, 500),
+                        protected_ranges=protected,
+                    )
+                    if cut_y is None and y_hi > y_lo + 80:
+                        try:
+                            gray = cv2.cvtColor(part[y_lo:y_hi], cv2.COLOR_BGR2GRAY)
+                            ink = (gray < 140).mean(axis=1)
+                            for idx in np.argsort(ink)[:80]:
+                                cy = int(y_lo + idx)
+                                if float(ink[idx]) >= 0.02:
                                     break
-                            if forced is not None:
+                                if any(t - 50 <= cy <= b + 50 for t, b in protected):
+                                    continue
+                                cut_y = cy
+                                print(f"[*] برش امن (کم‌جوهر در ۱۴k–۱۶k): y={cut_y}")
                                 break
-                        if forced is None:
-                            print(f"[!] محل امن برای نوار {ph}px پیدا نشد — بدون برش رها شد تا حباب نصف نشود.")
+                        except Exception as e:
+                            print(f"    [!] fallback 14k-16k: {e}")
+                    if cut_y is None:
+                        before_text = None
+                        if protected:
+                            hits = []
+                            for t, b in protected:
+                                if b < y_lo or t > y_hi:
+                                    continue
+                                hits.append((t, b))
+                            hits.sort()
+                            for t, b in hits:
+                                cand = int(t) - 8
+                                if cand < 500:
+                                    continue
+                                if any(tt < cand < bb for tt, bb in protected):
+                                    continue
+                                before_text = cand
+                                break
+                            if before_text is None and hits:
+                                last_b = max(b for t, b in hits if t < y_hi)
+                                cand = int(last_b) + 8
+                                if cand <= 16000 and cand < ph - 50:
+                                    if not any(tt < cand < bb for tt, bb in protected):
+                                        before_text = cand
+                        if before_text is not None:
+                            cut_y = before_text
+                            print(
+                                f"[*] برش امن: محل خالی نبود → پشت متن قبلی y={cut_y} "
+                                f"(بازه ۱۴k–۱۶k)"
+                            )
+                        elif ph <= hard_cap:
                             new_parts.append(part)
                             continue
-                        cut_y = forced
-                        print(f"[*] برش خارج‌حباب نزدیک سقف: y={cut_y}")
+                        else:
+                            forced = None
+                            for delta in range(0, 2000, 20):
+                                cand = 16000 - delta
+                                if cand < y_lo:
+                                    break
+                                if not any(t < cand < b for t, b in protected):
+                                    forced = cand
+                                    break
+                            if forced is None:
+                                print(f"[!] در ۱۴k–۱۶k حتی پشت متن هم امن نبود — نوار {ph}px رها شد.")
+                                new_parts.append(part)
+                                continue
+                            cut_y = forced
+                            print(f"[*] برش خارج‌حباب نزدیک ۱۶k: y={cut_y}")
+                    if cut_y > 16000:
+                        cut_y = 16000
                     new_parts.append(part[:cut_y])
                     new_parts.append(part[cut_y:])
                     did_split = True
@@ -7628,7 +7678,6 @@ html, body { background: #0a0a0b; }
             buf, buf_h, buf_bounds = [], 0, []
 
         def _cut_loop() -> None:
-            
             while buf_h > hard_cap:
                 strip = _stack(buf)
                 cut_y = hard_cap
@@ -7924,6 +7973,10 @@ html, body { background: #0a0a0b; }
         if len(image_files) > 1 and (self.stitch_max_height > 0 or getattr(self, "repair_page_seams", True)):
             stitch_dir = os.path.join(cache_dir, "stitched")
             image_files = self._stitch_pages_for_efficiency(image_files, stitch_dir)
+        if self.stitch_max_height > 0:
+            split_dir = os.path.join(cache_dir, "safecut")
+            image_files = self._safe_split_strips(image_files, split_dir)
+
         processed_files = []
         skipped = 0
         page_ext = "." + (self.img_format or "webp").lstrip(".")
@@ -8010,253 +8063,67 @@ html, body { background: #0a0a0b; }
                 f"[*] حالت صرفه‌جویی API: تا رسیدن به {min_batch} دیالوگ ترجمه نمی‌شود؛ "
                 f"استخراج ادامه دارد و ترجمهٔ دسته‌ها هم‌زمان در پس‌زمینه انجام می‌شود."
             )
-
-        MAX_COMBINED = 16000
-        target_h = max(1000, int(self.stitch_max_height)) if self.stitch_max_height > 0 else 12000
-        safe_max = min(target_h + 2000, MAX_COMBINED)  
-        min_fill = target_h  
-
-        def _mw(img, ref_w):
-            if img is None or img.size == 0 or int(img.shape[1]) == int(ref_w):
-                return img
-            h, w = img.shape[:2]
-            nh = max(1, int(round(h * (ref_w / float(w)))))
-            interp = cv2.INTER_AREA if ref_w < w else cv2.INTER_CUBIC
-            return np.ascontiguousarray(cv2.resize(img, (ref_w, nh), interpolation=interp))
-
-        def _do_safe_cut(img, label=""):
-            if img is None or img.size == 0:
-                return img, None
-            oh = int(img.shape[0])
-            if oh <= safe_max:
-                return img, None
-            
-            protected = []
-            if self.det is not None:
-                try:
-                    protected = self._scan_protected_ranges(
-                        img, max(0, target_h - 2500), min(oh, MAX_COMBINED + 500)
-                    )
-                except Exception as e:
-                    print(f"    [!] scan protected: {e}")
-            
-            cut_y = None
-            for radius in (max(safe_max - target_h, 800), 1500, 2500, 3500):
-                cut_y = self._find_safe_cut_y(
-                    img, target_h, max(1000, target_h - radius),
-                    min(MAX_COMBINED, oh - 50),
-                    search_radius=radius,
-                    protected_ranges=protected,
-                )
-                if cut_y is not None:
-                    break
-            if cut_y is None:
-                
-                try:
-                    import cv2 as _cv
-                    import numpy as _np
-                    y_lo = max(1000, target_h - 2000)
-                    y_hi = min(oh - 50, MAX_COMBINED)
-                    if y_hi > y_lo + 100:
-                        gray = _cv.cvtColor(img[y_lo:y_hi], _cv.COLOR_BGR2GRAY)
-                        ink = (gray < 140).mean(axis=1)
-                        order = list(_np.argsort(ink))  
-                        for idx in order[:80]:
-                            cy = int(y_lo + idx)
-                            hit = any(t - 60 <= cy <= b + 60 for t, b in protected)
-                            if not hit and float(ink[idx]) < 0.015:
-                                cut_y = cy
-                                print(f"[*] برش امن (fallback کم‌جوهر): y={cut_y}")
-                                break
-                except Exception as e:
-                    print(f"    [!] fallback cut: {e}")
-            if cut_y is None:
-                if oh > MAX_COMBINED:
-                    
-                    forced = MAX_COMBINED
-                    for delta in range(0, 2000, 20):
-                        for cand in (forced - delta, forced + delta):
-                            if 500 < cand < oh - 50:
-                                hit = any(t - 40 <= cand <= b + 40 for t, b in protected)
-                                if not hit:
-                                    cut_y = cand
-                                    print(f"[!] محل خالی ایده‌آل نبود؛ برش خارج حباب y={cut_y}")
-                                    break
-                        if cut_y is not None:
-                            break
-                    if cut_y is None:
-                        print(f"[!] هیچ محل امنی پیدا نشد — برش انجام نشد تا حباب نصف نشود "
-                              f"(ارتفاع={oh}px)")
-                        return img, None
-                else:
-                    return img, None
-            if not (0 < cut_y < oh):
-                return img, None
-            
-            if any(t < cut_y < b for t, b in protected):
-                print(f"[!] y={cut_y} هنوز داخل حباب بود — برش لغو شد")
-                return img, None
-            head, tail = img[:cut_y], img[cut_y:]
-            print(
-                f"[*] برش امن: '{label}' {oh}px → سر {int(head.shape[0])}px "
-                f"+ باقی {int(tail.shape[0])}px (سقف ترکیب {MAX_COMBINED})"
-            )
-            return head, tail
-
-        def _extract_chunk(img, label, seq):
-            if img is None or img.size == 0:
-                return
-            if self._is_mostly_blank(img):
-                print(f"- رد شد (خالی): '{label}'")
-                return
-            out_f = os.path.join(out_dir, f"strip_acc_{seq:03d}_h{int(img.shape[0])}{page_ext}")
-            print("-------------------- شروع عملیات جدید --------------------")
-            print(f"[فاز ۱ - تشخیص حباب + OCR] '{label}' (h={int(img.shape[0])})...")
+        def _extract_one(item):
+            page_i, f, out_file = item
+            MangaTranslator._title_skip_enabled = (page_i == 0)
             try:
-                regions, dbg = self.extract_regions_phase(img)
+                image = cv2.imread(f)
+                if image is None:
+                    raise ValueError(f"تصویر قابل خواندن نیست: {f}")
+                basename = os.path.basename(f)
+                print("-------------------- شروع عملیات جدید --------------------")
+                extra_parts = []
+                hard = 16000
+                if int(image.shape[0]) > hard and self.stitch_max_height > 0:
+                    tmp_dir = os.path.join(cache_dir, "safecut_extra")
+                    os.makedirs(tmp_dir, exist_ok=True)
+                    parts = self._safe_split_strips([f], tmp_dir)
+                    if parts:
+                        image = cv2.imread(parts[0])
+                        if image is None:
+                            raise ValueError(f"خواندن تکهٔ برش‌خورده ناموفق: {parts[0]}")
+                        extra_parts = parts[1:]
+                if self._is_mostly_blank(image):
+                    print(f"- رد شد (صفحه خالی): '{basename}'")
+                    return page_i, out_file, None, None, None, []
+                print(f"[فاز ۱ - تشخیص حباب + OCR] '{basename}' (h={int(image.shape[0])})...")
+                regions, dbg = self.extract_regions_phase(image)
+                return page_i, out_file, image, regions, dbg, extra_parts
             except GeminiQuotaExhausted:
                 raise
             except Exception as e:
-                print(f"    [!] خطا در استخراج {label}: {e}", file=sys.stderr)
-                return
-            extracted.append((seq, out_f, img, regions, dbg))
-            if regions:
+                print(f"    [!] خطا در استخراج {os.path.basename(f)}: {e}", file=sys.stderr)
+                return page_i, out_file, None, None, None, []
+            finally:
+                MangaTranslator._title_skip_enabled = False
+
+        work_queue = list(pending)
+        qi = 0
+        while qi < len(work_queue):
+            item = work_queue[qi]
+            qi += 1
+            try:
+                page_i, out_file, image, regions, dbg, extra = _extract_one(item)
+            except GeminiQuotaExhausted as e:
+                print(f"\n[!] {e}")
+                break
+            if extra:
+                base = os.path.splitext(os.path.basename(out_file))[0]
+                ext = os.path.splitext(out_file)[1] or page_ext
+                for j, pth in enumerate(extra):
+                    work_queue.insert(qi + j, (
+                        page_i + 0.01 * (j + 1),
+                        pth,
+                        os.path.join(out_dir, f"{base}_x{j+2}{ext}"),
+                    ))
+            extracted.append((page_i, out_file, image, regions, dbg))
+            if image is not None and regions:
                 _queue_dialogues(regions)
                 if dialogue_buffer and len(dialogue_buffer) < min_batch:
                     print(
                         f"    [*] بافر ترجمه: {len(dialogue_buffer)}/{min_batch} "
                         f"— ترجمه در پس‌زمینه؛ استخراج ادامه دارد..."
                     )
-
-        acc = None
-        acc_name = ""
-        seq = 0
-
-        def _append_to_acc(piece, name):
-            
-            nonlocal acc, acc_name
-            if piece is None or piece.size == 0:
-                return None
-            if acc is None or acc.size == 0:
-                acc = piece
-                acc_name = name
-            else:
-                piece = _mw(piece, int(acc.shape[1]))
-                room = MAX_COMBINED - int(acc.shape[0])
-                if room <= 0:
-                    
-                    return piece  
-                take = min(int(piece.shape[0]), room)
-                acc = np.vstack([acc, piece[:take]])
-                acc_name = f"{acc_name}+{name}" if acc_name else name
-                if take < int(piece.shape[0]):
-                    return piece[take:]
-            return None
-
-        n_pending = len(pending)
-
-        start_qi = 0
-        if n_pending > 0:
-            page_i, f, out_file = pending[0]
-            MangaTranslator._title_skip_enabled = True
-            try:
-                page = cv2.imread(f)
-                if page is not None:
-                    basename = os.path.basename(f)
-                    
-                    while page is not None and int(page.shape[0]) > safe_max:
-                        head, tail = _do_safe_cut(page, basename)
-                        seq += 1
-                        _extract_chunk(head, f"{basename}#first-{seq}", seq)
-                        page = tail
-                    if page is not None and page.size > 0:
-                        seq += 1
-                        print(f"[*] صفحهٔ اول جدا (بدون ترکیب): '{basename}' h={int(page.shape[0])}")
-                        _extract_chunk(page, f"{basename}#first", seq)
-                start_qi = 1
-            except GeminiQuotaExhausted as e:
-                print(f"\n[!] {e}")
-                start_qi = n_pending  
-            except Exception as e:
-                print(f"    [!] خطا صفحهٔ اول: {e}", file=sys.stderr)
-                start_qi = 1
-            finally:
-                MangaTranslator._title_skip_enabled = False
-
-        for qi in range(start_qi, n_pending):
-            page_i, f, out_file = pending[qi]
-            is_last = (qi == n_pending - 1)
-            MangaTranslator._title_skip_enabled = False
-            try:
-                page = cv2.imread(f)
-                if page is None:
-                    raise ValueError(f"تصویر قابل خواندن نیست: {f}")
-                basename = os.path.basename(f)
-                leftover = page
-
-                while leftover is not None and leftover.size > 0:
-                    
-                    if acc is not None and int(acc.shape[0]) >= MAX_COMBINED:
-                        while acc is not None and int(acc.shape[0]) > safe_max:
-                            head, tail = _do_safe_cut(acc, acc_name)
-                            seq += 1
-                            _extract_chunk(head, f"{acc_name}#{seq}", seq)
-                            acc = tail
-                            acc_name = "carry"
-                        if acc is not None and acc.size > 0:
-                            
-                            seq += 1
-                            _extract_chunk(acc, f"{acc_name}#{seq}", seq)
-                            acc = None
-                            acc_name = ""
-
-                    before = int(acc.shape[0]) if acc is not None else 0
-                    leftover = _append_to_acc(leftover, basename)
-                    after = int(acc.shape[0]) if acc is not None else 0
-                    print(
-                        f"[*] انباشته: +{after - before}px از '{basename}' "
-                        f"→ {after}px / {MAX_COMBINED}"
-                        + (f" (مانده {int(leftover.shape[0])}px)" if leftover is not None and leftover.size else "")
-                    )
-
-                    if acc is not None and int(acc.shape[0]) > safe_max:
-                        while acc is not None and int(acc.shape[0]) > safe_max:
-                            head, tail = _do_safe_cut(acc, acc_name)
-                            seq += 1
-                            _extract_chunk(head, f"{acc_name}#{seq}", seq)
-                            acc = tail
-                            acc_name = "carry"
-
-                if is_last and acc is not None and acc.size > 0:
-                    while acc is not None and int(acc.shape[0]) > safe_max:
-                        head, tail = _do_safe_cut(acc, acc_name)
-                        seq += 1
-                        _extract_chunk(head, f"{acc_name}#{seq}", seq)
-                        acc = tail
-                    if acc is not None and acc.size > 0:
-                        seq += 1
-                        print(f"[*] استخراج انباشته نهایی ({int(acc.shape[0])}px)")
-                        _extract_chunk(acc, f"{acc_name}#final", seq)
-                        acc = None
-
-            except GeminiQuotaExhausted as e:
-                print(f"\n[!] {e}")
-                break
-            except Exception as e:
-                print(f"    [!] خطا: {e}", file=sys.stderr)
-            finally:
-                MangaTranslator._title_skip_enabled = False
-
-        if acc is not None and acc.size > 0:
-            while acc is not None and int(acc.shape[0]) > safe_max:
-                head, tail = _do_safe_cut(acc, acc_name or "tail")
-                seq += 1
-                _extract_chunk(head, f"tail#{seq}", seq)
-                acc = tail
-            if acc is not None and acc.size > 0:
-                seq += 1
-                _extract_chunk(acc, "tail#final", seq)
-                acc = None
 
         
         _flush_translate_buffer(force=True)
@@ -8565,8 +8432,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
                         "اضافی را خودش فیلتر می‌کند)")
     p.add_argument("--max-chunk-height", type=int, default=3500,
                    help="حداکثر ارتفاع هر تکه OCR داخل یک تصویر (پیکسل)")
-    p.add_argument("--stitch-max-height", type=int, default=12000,
-                   help="هدف برش امن در فاز استخراج (پیش‌فرض ۱۲۰۰۰). ابتدا صفحات کورکورانه "
+    p.add_argument("--stitch-max-height", type=int, default=16000,
+                   help="سقف ارتفاع نوار (پیش‌فرض ۱۶۰۰۰). برش امن اول کار تا ≤۱۶۰۰۰، بدون نصف کردن حباب"
                         "تا سقف ۱۵۹۹۹ چسبانده می‌شوند (بدون چک حباب)؛ بعد در فاز استخراج، "
                         "نوارهای بلندتر از هدف در پنجرهٔ [هدف تا هدف+۲۰۰۰] (مثلاً ۱۲۰۰۰–۱۴۰۰۰) "
                         "روی محل امن شکسته می‌شوند تا حباب/متن نصف نشود. "
