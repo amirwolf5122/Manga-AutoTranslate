@@ -5315,6 +5315,9 @@ class MangaTranslator:
 
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
       vis = image.copy()
+
+      
+
       colors = {
         "dialogue": (0, 0, 255),      
         "promo": (0, 165, 255),       
@@ -7839,6 +7842,7 @@ html, body { background: #0a0a0b; }
                         tw = cand
                     cluster_summary[tw] = cluster_summary.get(tw, 0) + 1
                     im = self._normalize_page_width(im, target_w=tw)
+                    
                     fmt_cap = 16383
                     if im.shape[0] > fmt_cap:
                         scale = fmt_cap / float(im.shape[0])
@@ -7887,7 +7891,74 @@ html, body { background: #0a0a0b; }
         if skipped:
             print(f"[*] {skipped} صفحه از کش (resume).")
 
-        
+        results_by_i = {}
+        min_batch = max(1, int(getattr(self, "min_translate_batch", 15) or 15))
+        min_batch = max(min_batch, max(1, int(getattr(self, "bubbles_per_request", 15) or 15)))
+        extracted: List[tuple] = []
+        dialogue_buffer: List[TextRegion] = []
+        global_id = 0
+        translate_pool = ThreadPoolExecutor(max_workers=1)
+        translate_futures: List = []
+
+        def _wait_translations() -> None:
+            if not translate_futures:
+                return
+            print(f"[*] انتظار برای پایان {len(translate_futures)} دسته ترجمهٔ پس‌زمینه...")
+            for fut in translate_futures:
+                try:
+                    fut.result()
+                except GeminiQuotaExhausted as e:
+                    print(f"\n[!] {e}")
+                except Exception as e:
+                    print(f"    [!] خطای ترجمهٔ پس‌زمینه: {e}", file=sys.stderr)
+            translate_futures.clear()
+
+        def _flush_translate_buffer(force: bool = False) -> None:
+            nonlocal dialogue_buffer
+            if not dialogue_buffer:
+                return
+            if getattr(self, "clean_only", False):
+                return
+            if not force and len(dialogue_buffer) < min_batch:
+                return
+            n = len(dialogue_buffer)
+            print(
+                f"[فاز ۳ - ترجمهٔ پس‌زمینه] {n} دیالوگ "
+                f"(حداقل={min_batch}) → {self.provider}/{self.model_name} ..."
+            )
+            translate_futures.append(translate_pool.submit(self.translate_regions, dialogue_buffer))
+            dialogue_buffer = []
+
+        def _queue_dialogues(regions: List[TextRegion]) -> None:
+            nonlocal global_id, dialogue_buffer
+            if not regions:
+                return
+            for r in regions:
+                if r.kind != "dialogue":
+                    continue
+                r.id = global_id
+                global_id += 1
+                dialogue_buffer.append(r)
+            while len(dialogue_buffer) >= min_batch:
+                cap = max(min_batch, int(getattr(self, "bubbles_per_request", 15) or 15))
+                chunk = dialogue_buffer[:cap]
+                dialogue_buffer = dialogue_buffer[cap:]
+                print(
+                    f"[فاز ۳ - ترجمهٔ پس‌زمینه] {len(chunk)} دیالوگ "
+                    f"(مانده در بافر={len(dialogue_buffer)}) → "
+                    f"{self.provider}/{self.model_name} ... (استخراج ادامه دارد)"
+                )
+                translate_futures.append(translate_pool.submit(self.translate_regions, chunk))
+
+        if getattr(self, "clean_only", False):
+            print("[*] حالت پاکسازی بدون ترجمه — API فراخوانی نمی‌شود.")
+            min_batch = 10**9
+        else:
+            print(
+                f"[*] حالت صرفه‌جویی API: تا رسیدن به {min_batch} دیالوگ ترجمه نمی‌شود؛ "
+                f"استخراج ادامه دارد و ترجمهٔ دسته‌ها هم‌زمان در پس‌زمینه انجام می‌شود."
+            )
+
         MAX_COMBINED = 16000
         target_h = max(1000, int(self.stitch_max_height)) if self.stitch_max_height > 0 else 12000
         safe_max = min(target_h + 2000, MAX_COMBINED)  
@@ -7985,10 +8056,38 @@ html, body { background: #0a0a0b; }
             return None
 
         n_pending = len(pending)
-        for qi, item in enumerate(pending):
-            page_i, f, out_file = item
+
+        start_qi = 0
+        if n_pending > 0:
+            page_i, f, out_file = pending[0]
+            MangaTranslator._title_skip_enabled = True
+            try:
+                page = cv2.imread(f)
+                if page is not None:
+                    basename = os.path.basename(f)
+                    
+                    while page is not None and int(page.shape[0]) > safe_max:
+                        head, tail = _do_safe_cut(page, basename)
+                        seq += 1
+                        _extract_chunk(head, f"{basename}#first-{seq}", seq)
+                        page = tail
+                    if page is not None and page.size > 0:
+                        seq += 1
+                        print(f"[*] صفحهٔ اول جدا (بدون ترکیب): '{basename}' h={int(page.shape[0])}")
+                        _extract_chunk(page, f"{basename}#first", seq)
+                start_qi = 1
+            except GeminiQuotaExhausted as e:
+                print(f"\n[!] {e}")
+                start_qi = n_pending  
+            except Exception as e:
+                print(f"    [!] خطا صفحهٔ اول: {e}", file=sys.stderr)
+                start_qi = 1
+            finally:
+                MangaTranslator._title_skip_enabled = False
+        for qi in range(start_qi, n_pending):
+            page_i, f, out_file = pending[qi]
             is_last = (qi == n_pending - 1)
-            MangaTranslator._title_skip_enabled = (page_i == 0)
+            MangaTranslator._title_skip_enabled = False
             try:
                 page = cv2.imread(f)
                 if page is None:
@@ -7999,13 +8098,14 @@ html, body { background: #0a0a0b; }
                 while leftover is not None and leftover.size > 0:
                     
                     if acc is not None and int(acc.shape[0]) >= MAX_COMBINED:
-                        
                         while acc is not None and int(acc.shape[0]) > safe_max:
                             head, tail = _do_safe_cut(acc, acc_name)
                             seq += 1
                             _extract_chunk(head, f"{acc_name}#{seq}", seq)
                             acc = tail
+                            acc_name = "carry"
                         if acc is not None and acc.size > 0:
+                            
                             seq += 1
                             _extract_chunk(acc, f"{acc_name}#{seq}", seq)
                             acc = None
@@ -8017,19 +8117,17 @@ html, body { background: #0a0a0b; }
                     print(
                         f"[*] انباشته: +{after - before}px از '{basename}' "
                         f"→ {after}px / {MAX_COMBINED}"
-                        + (f" (مانده صفحه {int(leftover.shape[0])}px)" if leftover is not None and leftover.size else "")
+                        + (f" (مانده {int(leftover.shape[0])}px)" if leftover is not None and leftover.size else "")
                     )
 
-                    
                     if acc is not None and int(acc.shape[0]) > safe_max:
                         while acc is not None and int(acc.shape[0]) > safe_max:
                             head, tail = _do_safe_cut(acc, acc_name)
                             seq += 1
                             _extract_chunk(head, f"{acc_name}#{seq}", seq)
                             acc = tail
-                            acc_name = f"carry"
+                            acc_name = "carry"
 
-                
                 if is_last and acc is not None and acc.size > 0:
                     while acc is not None and int(acc.shape[0]) > safe_max:
                         head, tail = _do_safe_cut(acc, acc_name)
@@ -8050,7 +8148,6 @@ html, body { background: #0a0a0b; }
             finally:
                 MangaTranslator._title_skip_enabled = False
 
-        
         if acc is not None and acc.size > 0:
             while acc is not None and int(acc.shape[0]) > safe_max:
                 head, tail = _do_safe_cut(acc, acc_name or "tail")
