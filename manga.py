@@ -5316,14 +5316,6 @@ class MangaTranslator:
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
       vis = image.copy()
 
-      hfmask = getattr(self, "_last_hf_mask", None)
-      if hfmask is not None and hfmask.shape[:2] == vis.shape[:2]:
-        overlay = vis.copy()
-        overlay[hfmask > 0] = (255, 0, 255)
-        cv2.addWeighted(overlay, 0.22, vis, 0.78, 0, vis)
-        cnts, _ = cv2.findContours(hfmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(vis, cnts, -1, (255, 0, 255), 1)
-
       colors = {
         "dialogue": (0, 0, 255),      
         "promo": (0, 165, 255),       
@@ -5364,7 +5356,7 @@ class MangaTranslator:
         
         cx = x + w // 2
         
-        cv2.line(vis, (cx, y), (cx, y + h), (255, 0, 255), 2)  
+        cv2.line(vis, (cx, y), (cx, y + h), (0, 255, 255), 2)  
 
         
         cv2.circle(vis, (cx, y + h // 2), 4, (0, 255, 255), -1)  
@@ -6022,9 +6014,6 @@ class MangaTranslator:
                 if self.debug:
                     msg += " → در خروجی دیباگ با رنگ آبی (DROP) مشخص می‌شوند"
                 print(msg)
-            if self.debug and hfm is not None:
-                print("    [*] DEBUG: ماسک ComicTextSegONNX (محل متن‌هایی که دیده) "
-                      "با رنگ بنفش روی تصویر دیباگ نشان داده می‌شود")
             regions = kept
 
         print(f"    [*] RT-DETR: {n0} خام → {before} OCR → {len(regions)} نهایی")
@@ -7872,12 +7861,6 @@ html, body { background: #0a0a0b; }
         if len(image_files) > 1 and (self.stitch_max_height > 0 or getattr(self, "repair_page_seams", True)):
             stitch_dir = os.path.join(cache_dir, "stitched")
             image_files = self._stitch_pages_for_efficiency(image_files, stitch_dir)
-
-        
-        if self.stitch_max_height > 0:
-            split_dir = os.path.join(cache_dir, "safecut")
-            image_files = self._safe_split_strips(image_files, split_dir)
-
         processed_files = []
         skipped = 0
         page_ext = "." + (self.img_format or "webp").lstrip(".")
@@ -7906,17 +7889,46 @@ html, body { background: #0a0a0b; }
                     raise ValueError(f"تصویر قابل خواندن نیست: {f}")
                 basename = os.path.basename(f)
                 print("-------------------- شروع عملیات جدید --------------------")
+
+                extra_pending = []
+                if self.stitch_max_height > 0 and image is not None:
+                    target = max(1000, int(self.stitch_max_height))
+                    hard_cap = 15999
+                    safe_max = min(target + 2000, hard_cap)
+                    orig_h = int(image.shape[0])
+                    if orig_h > safe_max:
+                        split_dir = os.path.join(cache_dir, "safecut")
+                        os.makedirs(split_dir, exist_ok=True)
+                        parts = self._safe_split_strips([f], split_dir)
+                        if len(parts) > 1:
+                            image = cv2.imread(parts[0])
+                            if image is None:
+                                raise ValueError(f"خواندن تکهٔ برش‌خورده ناموفق: {parts[0]}")
+                            base = os.path.splitext(os.path.basename(out_file))[0]
+                            if "_p" in base and base.rsplit("_p", 1)[-1].isdigit():
+                                base = base.rsplit("_p", 1)[0]
+                            ext = os.path.splitext(out_file)[1] or page_ext
+                            out_file = os.path.join(out_dir, f"{base}_p1{ext}")
+                            for pi, pth in enumerate(parts[1:], start=2):
+                                part_out = os.path.join(out_dir, f"{base}_p{pi}{ext}")
+                                extra_pending.append((page_i + (pi - 1) * 0.01, pth, part_out))
+                            print(
+                                f"[*] برش امن (فاز استخراج): '{basename}' "
+                                f"({orig_h}px) → {len(parts)} تکه | "
+                                f"تکه ۱ همین‌جا، بقیه در صف استخراج"
+                            )
+
                 if self._is_mostly_blank(image):
                     print(f"- رد شد (صفحه خالی): '{basename}'")
-                    return page_i, out_file, None, None, None
+                    return page_i, out_file, None, None, None, extra_pending
                 print(f"[فاز ۱ - تشخیص حباب + OCR] '{basename}'...")
                 regions, dbg = self.extract_regions_phase(image)
-                return page_i, out_file, image, regions, dbg
+                return page_i, out_file, image, regions, dbg, extra_pending
             except GeminiQuotaExhausted:
                 raise
             except Exception as e:
                 print(f"    [!] خطا در استخراج {os.path.basename(f)}: {e}", file=sys.stderr)
-                return page_i, out_file, None, None, None
+                return page_i, out_file, None, None, None, []
             finally:
                 MangaTranslator._title_skip_enabled = False
 
@@ -8014,12 +8026,19 @@ html, body { background: #0a0a0b; }
             )
 
         
-        for item in pending:
+        work_queue = list(pending)
+        qi = 0
+        while qi < len(work_queue):
+            item = work_queue[qi]
+            qi += 1
             try:
-                page_i, out_file, image, regions, dbg = _extract_one(item)
+                page_i, out_file, image, regions, dbg, extra_pending = _extract_one(item)
             except GeminiQuotaExhausted as e:
                 print(f"\n[!] {e}")
                 break
+            if extra_pending:
+                for j, ep in enumerate(extra_pending):
+                    work_queue.insert(qi + j, ep)
             extracted.append((page_i, out_file, image, regions, dbg))
             if image is not None and regions:
                 _queue_dialogues(regions)
