@@ -5315,7 +5315,6 @@ class MangaTranslator:
 
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
       vis = image.copy()
-
       colors = {
         "dialogue": (0, 0, 255),      
         "promo": (0, 165, 255),       
@@ -6014,6 +6013,7 @@ class MangaTranslator:
                 if self.debug:
                     msg += " → در خروجی دیباگ با رنگ آبی (DROP) مشخص می‌شوند"
                 print(msg)
+            
             regions = kept
 
         print(f"    [*] RT-DETR: {n0} خام → {before} OCR → {len(regions)} نهایی")
@@ -7551,10 +7551,16 @@ html, body { background: #0a0a0b; }
             if arr is None or arr.size == 0:
                 return
             h = int(arr.shape[0])
-            if h > hard_cap:
+            codec_hard = {".webp": 16383, ".jpg": 65500, ".jpeg": 65500}.get(ext_s, 16383)
+            if h > codec_hard:
                 raise RuntimeError(
-                    f"نوار {strip_i + 1} ارتفاع {h}px شد؛ بیشتر از سقف {hard_cap}px مجاز نیست. "
-                    "پردازش متوقف شد تا متن نصف‌شده ذخیره نشود."
+                    f"نوار {strip_i + 1} ارتفاع {h}px از سقف فرمت ({codec_hard}px) رد شد. "
+                    "با --img-format png دوباره اجرا کنید. از وسط متن برش زده نشد."
+                )
+            if h > hard_cap:
+                print(
+                    f"    [*] نوار بلند {h}px (>ترکیب {hard_cap}) — "
+                    f"ذخیره بدون برش کور؛ برش امن در استخراج"
                 )
             out_path = os.path.join(work_dir, f"strip_{strip_i + 1:03d}{ext_s}")
             scale = (self.max_output_width / float(arr.shape[1])
@@ -7890,7 +7896,6 @@ html, body { background: #0a0a0b; }
                         tw = cand
                     cluster_summary[tw] = cluster_summary.get(tw, 0) + 1
                     im = self._normalize_page_width(im, target_w=tw)
-                    
                     fmt_cap = 16383
                     if im.shape[0] > fmt_cap:
                         scale = fmt_cap / float(im.shape[0])
@@ -7919,7 +7924,6 @@ html, body { background: #0a0a0b; }
         if len(image_files) > 1 and (self.stitch_max_height > 0 or getattr(self, "repair_page_seams", True)):
             stitch_dir = os.path.join(cache_dir, "stitched")
             image_files = self._stitch_pages_for_efficiency(image_files, stitch_dir)
-
         processed_files = []
         skipped = 0
         page_ext = "." + (self.img_format or "webp").lstrip(".")
@@ -8179,7 +8183,6 @@ html, body { background: #0a0a0b; }
             finally:
                 MangaTranslator._title_skip_enabled = False
 
-        
         for qi in range(start_qi, n_pending):
             page_i, f, out_file = pending[qi]
             is_last = (qi == n_pending - 1)
