@@ -5316,6 +5316,8 @@ class MangaTranslator:
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
       vis = image.copy()
 
+      
+
       colors = {
         "dialogue": (0, 0, 255),      
         "promo": (0, 165, 255),       
@@ -6014,6 +6016,7 @@ class MangaTranslator:
                 if self.debug:
                     msg += " → در خروجی دیباگ با رنگ آبی (DROP) مشخص می‌شوند"
                 print(msg)
+            
             regions = kept
 
         print(f"    [*] RT-DETR: {n0} خام → {before} OCR → {len(regions)} نهایی")
@@ -7572,7 +7575,7 @@ html, body { background: #0a0a0b; }
 
         def _cut_loop() -> None:
             
-            while buf_h >= hard_cap:
+            while buf_h > hard_cap:
                 strip = _stack(buf)
                 cut_y = hard_cap
                 bounds = [b for b in buf_bounds if 0 < b < cut_y]
@@ -7591,13 +7594,19 @@ html, body { background: #0a0a0b; }
                       "صفحهٔ جدید نوار تازهٔ خودش را شروع کرد.")
                 _flush_buffer("تغییر عرض")
             if not buf:
-
                 ref = target_w if _width_compatible(w, target_w) else w
             else:
                 ref = int(buf[0].shape[1])
             if w != ref:
                 im = _resize_to(im, ref)  
                 h, w = im.shape[:2]
+
+            if int(im.shape[0]) > hard_cap:
+                if buf:
+                    _flush_buffer("قبل از صفحهٔ خیلی‌بلند")
+                _emit(im, [], f"صفحهٔ بلند ({int(im.shape[0])}px) — برش امن در استخراج")
+                continue
+
             if buf:
                 buf_bounds.append(buf_h)
             buf.append(im)
@@ -7833,13 +7842,14 @@ html, body { background: #0a0a0b; }
                         tw = cand
                     cluster_summary[tw] = cluster_summary.get(tw, 0) + 1
                     im = self._normalize_page_width(im, target_w=tw)
-                    
-                    if im.shape[0] > hard_cap_h:
-                        scale = hard_cap_h / float(im.shape[0])
+
+                    fmt_cap = 16383
+                    if im.shape[0] > fmt_cap:
+                        scale = fmt_cap / float(im.shape[0])
                         nw = max(1, int(round(im.shape[1] * scale)))
-                        im = cv2.resize(im, (nw, hard_cap_h), interpolation=cv2.INTER_AREA)
-                        print(f"    [*] صفحه {i+1}: ارتفاع بعد از نرمال‌سازی از سقف رد شد "
-                              f"→ به {hard_cap_h}px کاهش یافت")
+                        im = cv2.resize(im, (nw, fmt_cap), interpolation=cv2.INTER_AREA)
+                        print(f"    [*] صفحه {i+1}: ارتفاع از سقف فرمت ({fmt_cap}px) رد شد "
+                              f"→ به {fmt_cap}px کاهش یافت")
                     if im.shape[1] != orig_w:
                         changed += 1
                     ext_n = "." + (getattr(self, "img_format", None) or "webp").lstrip(".")
@@ -7861,6 +7871,7 @@ html, body { background: #0a0a0b; }
         if len(image_files) > 1 and (self.stitch_max_height > 0 or getattr(self, "repair_page_seams", True)):
             stitch_dir = os.path.join(cache_dir, "stitched")
             image_files = self._stitch_pages_for_efficiency(image_files, stitch_dir)
+
         processed_files = []
         skipped = 0
         page_ext = "." + (self.img_format or "webp").lstrip(".")
@@ -7880,7 +7891,7 @@ html, body { background: #0a0a0b; }
         if skipped:
             print(f"[*] {skipped} صفحه از کش (resume).")
 
-        def _extract_one(item):
+        def _extract_one(item, carry_img=None):
             page_i, f, out_file = item
             MangaTranslator._title_skip_enabled = (page_i == 0)
             try:
@@ -7890,45 +7901,125 @@ html, body { background: #0a0a0b; }
                 basename = os.path.basename(f)
                 print("-------------------- شروع عملیات جدید --------------------")
 
-                extra_pending = []
+                MAX_COMBINED = 16000  
+                new_carry = None
+
+                if carry_img is not None and carry_img.size > 0:
+                    if carry_img.shape[1] != image.shape[1]:
+                        ch, cw = carry_img.shape[:2]
+                        nh = max(1, int(round(ch * (image.shape[1] / float(cw)))))
+                        interp = cv2.INTER_AREA if image.shape[1] < cw else cv2.INTER_CUBIC
+                        carry_img = np.ascontiguousarray(
+                            cv2.resize(carry_img, (image.shape[1], nh), interpolation=interp)
+                        )
+                    ch = int(carry_img.shape[0])
+                    ih = int(image.shape[0])
+                    room = max(0, MAX_COMBINED - ch)
+                    if room <= 0:
+                        image = carry_img
+                        new_carry = image
+                        print(
+                            f"[*] باقی‌ماندهٔ قبلی ({ch}px) خودش ≥{MAX_COMBINED}؛ "
+                            f"اول آن را می‌بریم، '{basename}' برای بعد می‌ماند"
+                        )
+                        
+                        deferred_page = image
+                        image = carry_img
+                        carry_img = None
+                    else:
+                        take = min(ih, room)
+                        head_new = image[:take]
+                        tail_new = image[take:] if take < ih else None
+                        image = np.vstack([carry_img, head_new])
+                        print(
+                            f"[*] باقی‌ماندهٔ قبلی ({ch}px) + {take}px از '{basename}' "
+                            f"→ ترکیبی {int(image.shape[0])}px "
+                            f"(سقف {MAX_COMBINED}"
+                            + (f"؛ {int(tail_new.shape[0])}px از عکس جدید برای بعد" if tail_new is not None and tail_new.size else "")
+                            + ")"
+                        )
+                        new_carry = tail_new  
+                        carry_img = None
+                        deferred_page = None
+                else:
+                    deferred_page = None
+
                 if self.stitch_max_height > 0 and image is not None:
                     target = max(1000, int(self.stitch_max_height))
-                    hard_cap = 15999
-                    safe_max = min(target + 2000, hard_cap)
+                    hard_cap = MAX_COMBINED
+                    safe_max = min(target + 2000, hard_cap)  
                     orig_h = int(image.shape[0])
                     if orig_h > safe_max:
-                        split_dir = os.path.join(cache_dir, "safecut")
-                        os.makedirs(split_dir, exist_ok=True)
-                        parts = self._safe_split_strips([f], split_dir)
-                        if len(parts) > 1:
-                            image = cv2.imread(parts[0])
-                            if image is None:
-                                raise ValueError(f"خواندن تکهٔ برش‌خورده ناموفق: {parts[0]}")
+                        if self.det is not None:
+                            protected = self._scan_protected_ranges(
+                                image, target - 1000, min(safe_max + 800, orig_h)
+                            )
+                        else:
+                            protected = []
+                        cut_y = self._find_safe_cut_y(
+                            image, target, target, min(safe_max, orig_h),
+                            search_radius=max(safe_max - target, 512),
+                            protected_ranges=protected,
+                        )
+                        if cut_y is None:
+                            if orig_h > hard_cap:
+                                cut_y = hard_cap
+                                print(f"[!] هشدار: محل برش امن پیدا نشد؛ برش اجباری روی {hard_cap}px")
+                            else:
+                                cut_y = None
+                        if cut_y is not None and 0 < cut_y < orig_h:
+                            head = image[:cut_y]
+                            tail = image[cut_y:]
+                            print(
+                                f"[*] برش امن (فاز استخراج): '{basename}' "
+                                f"({orig_h}px) → سر {int(head.shape[0])}px "
+                                f"+ باقی‌مانده {int(tail.shape[0])}px "
+                                f"(با نوار بعدی ترکیب می‌شود، سقف {MAX_COMBINED})"
+                            )
+                            image = head
+                            
+                            if new_carry is not None and new_carry.size > 0:
+                                if tail.shape[1] != new_carry.shape[1]:
+                                    th, tw = tail.shape[:2]
+                                    nh = max(1, int(round(th * (new_carry.shape[1] / float(tw)))))
+                                    interp = cv2.INTER_AREA if new_carry.shape[1] < tw else cv2.INTER_CUBIC
+                                    tail = np.ascontiguousarray(
+                                        cv2.resize(tail, (new_carry.shape[1], nh), interpolation=interp)
+                                    )
+                                new_carry = np.vstack([tail, new_carry])
+                            else:
+                                new_carry = tail
                             base = os.path.splitext(os.path.basename(out_file))[0]
                             if "_p" in base and base.rsplit("_p", 1)[-1].isdigit():
                                 base = base.rsplit("_p", 1)[0]
                             ext = os.path.splitext(out_file)[1] or page_ext
-                            out_file = os.path.join(out_dir, f"{base}_p1{ext}")
-                            for pi, pth in enumerate(parts[1:], start=2):
-                                part_out = os.path.join(out_dir, f"{base}_p{pi}{ext}")
-                                extra_pending.append((page_i + (pi - 1) * 0.01, pth, part_out))
-                            print(
-                                f"[*] برش امن (فاز استخراج): '{basename}' "
-                                f"({orig_h}px) → {len(parts)} تکه | "
-                                f"تکه ۱ همین‌جا، بقیه در صف استخراج"
+                            out_file = os.path.join(out_dir, f"{base}_h{int(head.shape[0])}{ext}")
+
+                
+                if deferred_page is not None:
+                    if new_carry is not None and new_carry.size > 0:
+                        if deferred_page.shape[1] != new_carry.shape[1]:
+                            dh, dw = deferred_page.shape[:2]
+                            nh = max(1, int(round(dh * (new_carry.shape[1] / float(dw)))))
+                            interp = cv2.INTER_AREA if new_carry.shape[1] < dw else cv2.INTER_CUBIC
+                            deferred_page = np.ascontiguousarray(
+                                cv2.resize(deferred_page, (new_carry.shape[1], nh), interpolation=interp)
                             )
+                        new_carry = np.vstack([new_carry, deferred_page])
+                    else:
+                        new_carry = deferred_page
 
                 if self._is_mostly_blank(image):
                     print(f"- رد شد (صفحه خالی): '{basename}'")
-                    return page_i, out_file, None, None, None, extra_pending
-                print(f"[فاز ۱ - تشخیص حباب + OCR] '{basename}'...")
+                    return page_i, out_file, None, None, None, new_carry
+                print(f"[فاز ۱ - تشخیص حباب + OCR] '{basename}' (h={int(image.shape[0])})...")
                 regions, dbg = self.extract_regions_phase(image)
-                return page_i, out_file, image, regions, dbg, extra_pending
+                return page_i, out_file, image, regions, dbg, new_carry
             except GeminiQuotaExhausted:
                 raise
             except Exception as e:
                 print(f"    [!] خطا در استخراج {os.path.basename(f)}: {e}", file=sys.stderr)
-                return page_i, out_file, None, None, None, []
+                return page_i, out_file, None, None, None, None
             finally:
                 MangaTranslator._title_skip_enabled = False
 
@@ -8025,29 +8116,38 @@ html, body { background: #0a0a0b; }
                 f"استخراج ادامه دارد و ترجمهٔ دسته‌ها هم‌زمان در پس‌زمینه انجام می‌شود."
             )
 
-        
-        work_queue = list(pending)
-        qi = 0
-        while qi < len(work_queue):
-            item = work_queue[qi]
-            qi += 1
+        carry_img = None
+        for item in pending:
             try:
-                page_i, out_file, image, regions, dbg, extra_pending = _extract_one(item)
+                page_i, out_file, image, regions, dbg, carry_img = _extract_one(item, carry_img)
             except GeminiQuotaExhausted as e:
                 print(f"\n[!] {e}")
                 break
-            if extra_pending:
-                for j, ep in enumerate(extra_pending):
-                    work_queue.insert(qi + j, ep)
             extracted.append((page_i, out_file, image, regions, dbg))
             if image is not None and regions:
                 _queue_dialogues(regions)
-                
                 if dialogue_buffer and len(dialogue_buffer) < min_batch:
                     print(
                         f"    [*] بافر ترجمه: {len(dialogue_buffer)}/{min_batch} "
                         f"— ترجمه در پس‌زمینه؛ استخراج ادامه دارد..."
                     )
+
+        if carry_img is not None and carry_img.size > 0:
+            print("-------------------- شروع عملیات جدید (باقی‌ماندهٔ نهایی) --------------------")
+            try:
+                tail_h = int(carry_img.shape[0])
+                out_tail = os.path.join(out_dir, f"strip_tail_{tail_h}{page_ext}")
+                if not self._is_mostly_blank(carry_img):
+                    print(f"[فاز ۱ - تشخیص حباب + OCR] باقی‌ماندهٔ نهایی ({tail_h}px)...")
+                    regions, dbg = self.extract_regions_phase(carry_img)
+                    extracted.append((len(pending) + 0.5, out_tail, carry_img, regions, dbg))
+                    if regions:
+                        _queue_dialogues(regions)
+                else:
+                    print(f"- رد شد (باقی‌مانده خالی): {tail_h}px")
+            except Exception as e:
+                print(f"    [!] خطا در استخراج باقی‌ماندهٔ نهایی: {e}", file=sys.stderr)
+            carry_img = None
 
         
         _flush_translate_buffer(force=True)
