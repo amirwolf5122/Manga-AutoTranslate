@@ -5316,8 +5316,6 @@ class MangaTranslator:
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
       vis = image.copy()
 
-      
-
       colors = {
         "dialogue": (0, 0, 255),      
         "promo": (0, 165, 255),       
@@ -7300,7 +7298,7 @@ html, body { background: #0a0a0b; }
             print("[!] برش امن به تشخیص حباب نیاز دارد؛ نوارها دست‌نخورده پردازش می‌شوند.")
             return image_files
         target = max(1000, int(self.stitch_max_height))
-        hard_cap = 15999
+        hard_cap = 16000
         safe_max = min(target + 2000, hard_cap)
         os.makedirs(work_dir, exist_ok=True)
         out: List[str] = []
@@ -7446,7 +7444,7 @@ html, body { background: #0a0a0b; }
         if self.stitch_max_height <= 0:
             return self._repair_page_seams(image_files, work_dir)
 
-        hard_cap = 15999  
+        hard_cap = 16000  
 
         os.makedirs(work_dir, exist_ok=True)
         result: List[str] = []
@@ -7600,13 +7598,13 @@ html, body { background: #0a0a0b; }
             if w != ref:
                 im = _resize_to(im, ref)  
                 h, w = im.shape[:2]
-
             if int(im.shape[0]) > hard_cap:
                 if buf:
                     _flush_buffer("قبل از صفحهٔ خیلی‌بلند")
                 _emit(im, [], f"صفحهٔ بلند ({int(im.shape[0])}px) — برش امن در استخراج")
                 continue
-
+            if buf and (buf_h + int(im.shape[0]) > hard_cap):
+                _flush_buffer("سقف ترکیب قبل از صفحهٔ جدید")
             if buf:
                 buf_bounds.append(buf_h)
             buf.append(im)
@@ -7826,7 +7824,7 @@ html, body { background: #0a0a0b; }
                 normalized_files = []
                 changed = 0
                 cluster_summary: Dict[int, int] = {}
-                hard_cap_h = 15999
+                hard_cap_h = 16000
                 for i, f in enumerate(valid_files):
                     im = cv2.imread(f)
                     if im is None:
@@ -7842,7 +7840,6 @@ html, body { background: #0a0a0b; }
                         tw = cand
                     cluster_summary[tw] = cluster_summary.get(tw, 0) + 1
                     im = self._normalize_page_width(im, target_w=tw)
-
                     fmt_cap = 16383
                     if im.shape[0] > fmt_cap:
                         scale = fmt_cap / float(im.shape[0])
@@ -7903,7 +7900,6 @@ html, body { background: #0a0a0b; }
 
                 MAX_COMBINED = 16000  
                 new_carry = None
-
                 if carry_img is not None and carry_img.size > 0:
                     if carry_img.shape[1] != image.shape[1]:
                         ch, cw = carry_img.shape[:2]
@@ -7916,6 +7912,7 @@ html, body { background: #0a0a0b; }
                     ih = int(image.shape[0])
                     room = max(0, MAX_COMBINED - ch)
                     if room <= 0:
+                        
                         image = carry_img
                         new_carry = image
                         print(
@@ -7944,6 +7941,7 @@ html, body { background: #0a0a0b; }
                 else:
                     deferred_page = None
 
+                
                 if self.stitch_max_height > 0 and image is not None:
                     target = max(1000, int(self.stitch_max_height))
                     hard_cap = MAX_COMBINED
