@@ -5315,7 +5315,6 @@ class MangaTranslator:
 
     def _draw_debug_regions(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
       vis = image.copy()
-
       colors = {
         "dialogue": (0, 0, 255),      
         "promo": (0, 165, 255),       
@@ -7888,241 +7887,72 @@ html, body { background: #0a0a0b; }
         if skipped:
             print(f"[*] {skipped} صفحه از کش (resume).")
 
-        def _extract_one(item, carry_img=None):
-            page_i, f, out_file = item
-            MangaTranslator._title_skip_enabled = (page_i == 0)
-            try:
-                image = cv2.imread(f)
-                if image is None:
-                    raise ValueError(f"تصویر قابل خواندن نیست: {f}")
-                basename = os.path.basename(f)
-                print("-------------------- شروع عملیات جدید --------------------")
-
-                MAX_COMBINED = 16000  
-                new_carry = None
-                if carry_img is not None and carry_img.size > 0:
-                    if carry_img.shape[1] != image.shape[1]:
-                        ch, cw = carry_img.shape[:2]
-                        nh = max(1, int(round(ch * (image.shape[1] / float(cw)))))
-                        interp = cv2.INTER_AREA if image.shape[1] < cw else cv2.INTER_CUBIC
-                        carry_img = np.ascontiguousarray(
-                            cv2.resize(carry_img, (image.shape[1], nh), interpolation=interp)
-                        )
-                    ch = int(carry_img.shape[0])
-                    ih = int(image.shape[0])
-                    room = max(0, MAX_COMBINED - ch)
-                    if room <= 0:
-                        
-                        image = carry_img
-                        new_carry = image
-                        print(
-                            f"[*] باقی‌ماندهٔ قبلی ({ch}px) خودش ≥{MAX_COMBINED}؛ "
-                            f"اول آن را می‌بریم، '{basename}' برای بعد می‌ماند"
-                        )
-                        
-                        deferred_page = image
-                        image = carry_img
-                        carry_img = None
-                    else:
-                        take = min(ih, room)
-                        head_new = image[:take]
-                        tail_new = image[take:] if take < ih else None
-                        image = np.vstack([carry_img, head_new])
-                        print(
-                            f"[*] باقی‌ماندهٔ قبلی ({ch}px) + {take}px از '{basename}' "
-                            f"→ ترکیبی {int(image.shape[0])}px "
-                            f"(سقف {MAX_COMBINED}"
-                            + (f"؛ {int(tail_new.shape[0])}px از عکس جدید برای بعد" if tail_new is not None and tail_new.size else "")
-                            + ")"
-                        )
-                        new_carry = tail_new  
-                        carry_img = None
-                        deferred_page = None
-                else:
-                    deferred_page = None
-
-                
-                if self.stitch_max_height > 0 and image is not None:
-                    target = max(1000, int(self.stitch_max_height))
-                    hard_cap = MAX_COMBINED
-                    safe_max = min(target + 2000, hard_cap)  
-                    orig_h = int(image.shape[0])
-                    if orig_h > safe_max:
-                        if self.det is not None:
-                            protected = self._scan_protected_ranges(
-                                image, target - 1000, min(safe_max + 800, orig_h)
-                            )
-                        else:
-                            protected = []
-                        cut_y = self._find_safe_cut_y(
-                            image, target, target, min(safe_max, orig_h),
-                            search_radius=max(safe_max - target, 512),
-                            protected_ranges=protected,
-                        )
-                        if cut_y is None:
-                            if orig_h > hard_cap:
-                                cut_y = hard_cap
-                                print(f"[!] هشدار: محل برش امن پیدا نشد؛ برش اجباری روی {hard_cap}px")
-                            else:
-                                cut_y = None
-                        if cut_y is not None and 0 < cut_y < orig_h:
-                            head = image[:cut_y]
-                            tail = image[cut_y:]
-                            print(
-                                f"[*] برش امن (فاز استخراج): '{basename}' "
-                                f"({orig_h}px) → سر {int(head.shape[0])}px "
-                                f"+ باقی‌مانده {int(tail.shape[0])}px "
-                                f"(با نوار بعدی ترکیب می‌شود، سقف {MAX_COMBINED})"
-                            )
-                            image = head
-                            
-                            if new_carry is not None and new_carry.size > 0:
-                                if tail.shape[1] != new_carry.shape[1]:
-                                    th, tw = tail.shape[:2]
-                                    nh = max(1, int(round(th * (new_carry.shape[1] / float(tw)))))
-                                    interp = cv2.INTER_AREA if new_carry.shape[1] < tw else cv2.INTER_CUBIC
-                                    tail = np.ascontiguousarray(
-                                        cv2.resize(tail, (new_carry.shape[1], nh), interpolation=interp)
-                                    )
-                                new_carry = np.vstack([tail, new_carry])
-                            else:
-                                new_carry = tail
-                            base = os.path.splitext(os.path.basename(out_file))[0]
-                            if "_p" in base and base.rsplit("_p", 1)[-1].isdigit():
-                                base = base.rsplit("_p", 1)[0]
-                            ext = os.path.splitext(out_file)[1] or page_ext
-                            out_file = os.path.join(out_dir, f"{base}_h{int(head.shape[0])}{ext}")
-
-                
-                if deferred_page is not None:
-                    if new_carry is not None and new_carry.size > 0:
-                        if deferred_page.shape[1] != new_carry.shape[1]:
-                            dh, dw = deferred_page.shape[:2]
-                            nh = max(1, int(round(dh * (new_carry.shape[1] / float(dw)))))
-                            interp = cv2.INTER_AREA if new_carry.shape[1] < dw else cv2.INTER_CUBIC
-                            deferred_page = np.ascontiguousarray(
-                                cv2.resize(deferred_page, (new_carry.shape[1], nh), interpolation=interp)
-                            )
-                        new_carry = np.vstack([new_carry, deferred_page])
-                    else:
-                        new_carry = deferred_page
-
-                if self._is_mostly_blank(image):
-                    print(f"- رد شد (صفحه خالی): '{basename}'")
-                    return page_i, out_file, None, None, None, new_carry
-                print(f"[فاز ۱ - تشخیص حباب + OCR] '{basename}' (h={int(image.shape[0])})...")
-                regions, dbg = self.extract_regions_phase(image)
-                return page_i, out_file, image, regions, dbg, new_carry
-            except GeminiQuotaExhausted:
-                raise
-            except Exception as e:
-                print(f"    [!] خطا در استخراج {os.path.basename(f)}: {e}", file=sys.stderr)
-                return page_i, out_file, None, None, None, None
-            finally:
-                MangaTranslator._title_skip_enabled = False
-
-        def _finish_one(page_i, out_file, image, regions, dbg):
-            if image is None:
-                return page_i, out_file, None, dbg
-            if not regions:
-                return page_i, out_file, image, dbg
-            try:
-                result, page_debug = self.finish_page_phase(
-                    image, regions, prior_debug=dbg
-                )
-                dbg_out = page_debug if page_debug is not None else dbg
-                return page_i, out_file, result, dbg_out
-            except GeminiQuotaExhausted:
-                raise
-            except Exception as e:
-                print(f"    [!] خطا در تکمیل {os.path.basename(out_file)}: {e}", file=sys.stderr)
-                return page_i, out_file, None, dbg
-
-        results_by_i = {}
-
         
-        min_batch = max(1, int(getattr(self, "min_translate_batch", 15) or 15))
-        
-        min_batch = max(min_batch, max(1, int(getattr(self, "bubbles_per_request", 15) or 15)))
+        MAX_COMBINED = 16000
+        target_h = max(1000, int(self.stitch_max_height)) if self.stitch_max_height > 0 else 12000
+        safe_max = min(target_h + 2000, MAX_COMBINED)  
+        min_fill = target_h  
 
-        extracted: List[tuple] = []  
-        dialogue_buffer: List[TextRegion] = []
-        global_id = 0
+        def _mw(img, ref_w):
+            if img is None or img.size == 0 or int(img.shape[1]) == int(ref_w):
+                return img
+            h, w = img.shape[:2]
+            nh = max(1, int(round(h * (ref_w / float(w)))))
+            interp = cv2.INTER_AREA if ref_w < w else cv2.INTER_CUBIC
+            return np.ascontiguousarray(cv2.resize(img, (ref_w, nh), interpolation=interp))
 
-        
-        translate_pool = ThreadPoolExecutor(max_workers=1)
-        translate_futures: List = []
-
-        def _wait_translations() -> None:
-            if not translate_futures:
-                return
-            print(f"[*] انتظار برای پایان {len(translate_futures)} دسته ترجمهٔ پس‌زمینه...")
-            for fut in translate_futures:
+        def _do_safe_cut(img, label=""):
+            if img is None or img.size == 0:
+                return img, None
+            oh = int(img.shape[0])
+            if oh <= safe_max:
+                return img, None
+            protected = []
+            if self.det is not None:
                 try:
-                    fut.result()
-                except GeminiQuotaExhausted as e:
-                    print(f"\n[!] {e}")
+                    protected = self._scan_protected_ranges(
+                        img, target_h - 1000, min(safe_max + 800, oh)
+                    )
                 except Exception as e:
-                    print(f"    [!] خطای ترجمهٔ پس‌زمینه: {e}", file=sys.stderr)
-            translate_futures.clear()
-
-        def _flush_translate_buffer(force: bool = False) -> None:
-            nonlocal dialogue_buffer
-            if not dialogue_buffer:
-                return
-            if getattr(self, "clean_only", False):
-                return
-            if not force and len(dialogue_buffer) < min_batch:
-                return
-            n = len(dialogue_buffer)
-            print(
-                f"[فاز ۳ - ترجمهٔ پس‌زمینه] {n} دیالوگ "
-                f"(حداقل={min_batch}) → {self.provider}/{self.model_name} ..."
+                    print(f"    [!] scan protected: {e}")
+            cut_y = self._find_safe_cut_y(
+                img, target_h, target_h, min(safe_max, oh),
+                search_radius=max(safe_max - target_h, 512),
+                protected_ranges=protected,
             )
-            translate_futures.append(translate_pool.submit(self.translate_regions, dialogue_buffer))
-            dialogue_buffer = []
-
-        def _queue_dialogues(regions: List[TextRegion]) -> None:
-            nonlocal global_id, dialogue_buffer
-            if not regions:
-                return
-            for r in regions:
-                if r.kind != "dialogue":
-                    continue
-                
-                r.id = global_id
-                global_id += 1
-                dialogue_buffer.append(r)
-            while len(dialogue_buffer) >= min_batch:
-                
-                cap = max(min_batch, int(getattr(self, "bubbles_per_request", 15) or 15))
-                chunk = dialogue_buffer[:cap]
-                dialogue_buffer = dialogue_buffer[cap:]
-                print(
-                    f"[فاز ۳ - ترجمهٔ پس‌زمینه] {len(chunk)} دیالوگ "
-                    f"(مانده در بافر={len(dialogue_buffer)}) → "
-                    f"{self.provider}/{self.model_name} ... (استخراج ادامه دارد)"
-                )
-                translate_futures.append(translate_pool.submit(self.translate_regions, chunk))
-
-        if getattr(self, "clean_only", False):
-            print("[*] حالت پاکسازی بدون ترجمه — API فراخوانی نمی‌شود.")
-            min_batch = 10**9  
-        else:
+            if cut_y is None:
+                if oh > MAX_COMBINED:
+                    cut_y = MAX_COMBINED
+                    print(f"[!] محل امن پیدا نشد؛ برش اجباری {MAX_COMBINED}px")
+                else:
+                    return img, None
+            if not (0 < cut_y < oh):
+                return img, None
+            head, tail = img[:cut_y], img[cut_y:]
             print(
-                f"[*] حالت صرفه‌جویی API: تا رسیدن به {min_batch} دیالوگ ترجمه نمی‌شود؛ "
-                f"استخراج ادامه دارد و ترجمهٔ دسته‌ها هم‌زمان در پس‌زمینه انجام می‌شود."
+                f"[*] برش امن: '{label}' {oh}px → سر {int(head.shape[0])}px "
+                f"+ باقی {int(tail.shape[0])}px (سقف ترکیب {MAX_COMBINED})"
             )
+            return head, tail
 
-        carry_img = None
-        for item in pending:
+        def _extract_chunk(img, label, seq):
+            if img is None or img.size == 0:
+                return
+            if self._is_mostly_blank(img):
+                print(f"- رد شد (خالی): '{label}'")
+                return
+            out_f = os.path.join(out_dir, f"strip_acc_{seq:03d}_h{int(img.shape[0])}{page_ext}")
+            print("-------------------- شروع عملیات جدید --------------------")
+            print(f"[فاز ۱ - تشخیص حباب + OCR] '{label}' (h={int(img.shape[0])})...")
             try:
-                page_i, out_file, image, regions, dbg, carry_img = _extract_one(item, carry_img)
-            except GeminiQuotaExhausted as e:
-                print(f"\n[!] {e}")
-                break
-            extracted.append((page_i, out_file, image, regions, dbg))
-            if image is not None and regions:
+                regions, dbg = self.extract_regions_phase(img)
+            except GeminiQuotaExhausted:
+                raise
+            except Exception as e:
+                print(f"    [!] خطا در استخراج {label}: {e}", file=sys.stderr)
+                return
+            extracted.append((seq, out_f, img, regions, dbg))
+            if regions:
                 _queue_dialogues(regions)
                 if dialogue_buffer and len(dialogue_buffer) < min_batch:
                     print(
@@ -8130,22 +7960,107 @@ html, body { background: #0a0a0b; }
                         f"— ترجمه در پس‌زمینه؛ استخراج ادامه دارد..."
                     )
 
-        if carry_img is not None and carry_img.size > 0:
-            print("-------------------- شروع عملیات جدید (باقی‌ماندهٔ نهایی) --------------------")
+        acc = None
+        acc_name = ""
+        seq = 0
+
+        def _append_to_acc(piece, name):
+            nonlocal acc, acc_name
+            if piece is None or piece.size == 0:
+                return None
+            if acc is None or acc.size == 0:
+                acc = piece
+                acc_name = name
+            else:
+                piece = _mw(piece, int(acc.shape[1]))
+                room = MAX_COMBINED - int(acc.shape[0])
+                if room <= 0:
+                    
+                    return piece  
+                take = min(int(piece.shape[0]), room)
+                acc = np.vstack([acc, piece[:take]])
+                acc_name = f"{acc_name}+{name}" if acc_name else name
+                if take < int(piece.shape[0]):
+                    return piece[take:]
+            return None
+
+        n_pending = len(pending)
+        for qi, item in enumerate(pending):
+            page_i, f, out_file = item
+            is_last = (qi == n_pending - 1)
+            MangaTranslator._title_skip_enabled = (page_i == 0)
             try:
-                tail_h = int(carry_img.shape[0])
-                out_tail = os.path.join(out_dir, f"strip_tail_{tail_h}{page_ext}")
-                if not self._is_mostly_blank(carry_img):
-                    print(f"[فاز ۱ - تشخیص حباب + OCR] باقی‌ماندهٔ نهایی ({tail_h}px)...")
-                    regions, dbg = self.extract_regions_phase(carry_img)
-                    extracted.append((len(pending) + 0.5, out_tail, carry_img, regions, dbg))
-                    if regions:
-                        _queue_dialogues(regions)
-                else:
-                    print(f"- رد شد (باقی‌مانده خالی): {tail_h}px")
+                page = cv2.imread(f)
+                if page is None:
+                    raise ValueError(f"تصویر قابل خواندن نیست: {f}")
+                basename = os.path.basename(f)
+                leftover = page
+
+                while leftover is not None and leftover.size > 0:
+                    
+                    if acc is not None and int(acc.shape[0]) >= MAX_COMBINED:
+                        
+                        while acc is not None and int(acc.shape[0]) > safe_max:
+                            head, tail = _do_safe_cut(acc, acc_name)
+                            seq += 1
+                            _extract_chunk(head, f"{acc_name}#{seq}", seq)
+                            acc = tail
+                        if acc is not None and acc.size > 0:
+                            seq += 1
+                            _extract_chunk(acc, f"{acc_name}#{seq}", seq)
+                            acc = None
+                            acc_name = ""
+
+                    before = int(acc.shape[0]) if acc is not None else 0
+                    leftover = _append_to_acc(leftover, basename)
+                    after = int(acc.shape[0]) if acc is not None else 0
+                    print(
+                        f"[*] انباشته: +{after - before}px از '{basename}' "
+                        f"→ {after}px / {MAX_COMBINED}"
+                        + (f" (مانده صفحه {int(leftover.shape[0])}px)" if leftover is not None and leftover.size else "")
+                    )
+
+                    
+                    if acc is not None and int(acc.shape[0]) > safe_max:
+                        while acc is not None and int(acc.shape[0]) > safe_max:
+                            head, tail = _do_safe_cut(acc, acc_name)
+                            seq += 1
+                            _extract_chunk(head, f"{acc_name}#{seq}", seq)
+                            acc = tail
+                            acc_name = f"carry"
+
+                
+                if is_last and acc is not None and acc.size > 0:
+                    while acc is not None and int(acc.shape[0]) > safe_max:
+                        head, tail = _do_safe_cut(acc, acc_name)
+                        seq += 1
+                        _extract_chunk(head, f"{acc_name}#{seq}", seq)
+                        acc = tail
+                    if acc is not None and acc.size > 0:
+                        seq += 1
+                        print(f"[*] استخراج انباشته نهایی ({int(acc.shape[0])}px)")
+                        _extract_chunk(acc, f"{acc_name}#final", seq)
+                        acc = None
+
+            except GeminiQuotaExhausted as e:
+                print(f"\n[!] {e}")
+                break
             except Exception as e:
-                print(f"    [!] خطا در استخراج باقی‌ماندهٔ نهایی: {e}", file=sys.stderr)
-            carry_img = None
+                print(f"    [!] خطا: {e}", file=sys.stderr)
+            finally:
+                MangaTranslator._title_skip_enabled = False
+
+        
+        if acc is not None and acc.size > 0:
+            while acc is not None and int(acc.shape[0]) > safe_max:
+                head, tail = _do_safe_cut(acc, acc_name or "tail")
+                seq += 1
+                _extract_chunk(head, f"tail#{seq}", seq)
+                acc = tail
+            if acc is not None and acc.size > 0:
+                seq += 1
+                _extract_chunk(acc, "tail#final", seq)
+                acc = None
 
         
         _flush_translate_buffer(force=True)
