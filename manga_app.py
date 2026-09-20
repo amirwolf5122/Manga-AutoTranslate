@@ -781,12 +781,30 @@ def run_desktop():
     keys_entry = ttk.Entry(card_ai, textvariable=keys_var, show="•")
     keys_entry.pack(fill="x")
 
+    OCR_LANG_CHOICES = [
+        ("انگلیسی", "en"),
+        ("کره‌ای (+ انگلیسی)", "ko en"),
+        ("ژاپنی (+ انگلیسی)", "ja en"),
+        ("چینی (+ انگلیسی)", "zh en"),
+        ("چندزبانه (کره‌ای/ژاپنی/چینی/انگلیسی)", "ko ja zh en"),
+    ]
+    _ocr_value_for = {lbl: val for lbl, val in OCR_LANG_CHOICES}
+    row_ai2 = ttk.Frame(card_ai); row_ai2.pack(fill="x", pady=(6, 0))
+    ocr_lang_var = tk.StringVar(value=next(
+        (lbl for lbl, val in OCR_LANG_CHOICES
+         if val == str(cfg.get("ocr_lang", "en"))), "انگلیسی"))
+    ttk.Label(row_ai2, text="زبان متن مانگا (OCR):").pack(side="right", padx=(0, 4))
+    ttk.Combobox(row_ai2, textvariable=ocr_lang_var,
+                 values=[lbl for lbl, _v in OCR_LANG_CHOICES],
+                 state="readonly", width=34).pack(side="right", padx=(0, 16))
+
     def _persist_api_desktop(*_a):
         try:
             cur = load_config()
             cur["api_keys"] = keys_var.get()
             cur["provider"] = prov_var.get()
             cur["model"] = model_var.get()
+            cur["ocr_lang"] = _ocr_value_for.get(ocr_lang_var.get(), "en")
             save_config(cur)
         except Exception:
             pass
@@ -804,6 +822,7 @@ def run_desktop():
     keys_var.trace_add("write", _schedule_api_save)
     prov_var.trace_add("write", _schedule_api_save)
     model_var.trace_add("write", _schedule_api_save)
+    ocr_lang_var.trace_add("write", _schedule_api_save)
 
     
     card_font = ttk.LabelFrame(tab_body, text=" فونت‌های لحن ", padding=10)
@@ -1298,23 +1317,29 @@ def run_desktop():
             cands = [
                 out_v if os.path.isdir(out_v) else "",
             ]
-            
-            
+            _cache_subs = ("out", "out_safe_v3", "debug", "debug_safe_v3")
             try:
                 cache_root = out_v + ".cache"
-                ranked = []
                 if os.path.isdir(cache_root):
+                    for sub in _cache_subs:
+                        cands.append(os.path.join(cache_root, sub))
                     for name in os.listdir(cache_root):
-                        if name.startswith("out"):
-                            p = os.path.join(cache_root, name)
-                            if os.path.isdir(p):
-                                try:
-                                    ranked.append((os.path.getmtime(p), p))
-                                except Exception:
-                                    ranked.append((0, p))
-                ranked.sort(reverse=True)
-                for _, p in ranked:
-                    cands.append(p)
+                        if name.startswith("out") or name.startswith("debug"):
+                            cands.append(os.path.join(cache_root, name))
+            except Exception:
+                pass
+            try:
+                for name in os.listdir(parent):
+                    if name.endswith(".cache"):
+                        cr = os.path.join(parent, name)
+                        for sub in _cache_subs:
+                            cands.append(os.path.join(cr, sub))
+                        try:
+                            for subn in os.listdir(cr):
+                                if subn.startswith("out") or subn.startswith("debug"):
+                                    cands.append(os.path.join(cr, subn))
+                        except Exception:
+                            pass
             except Exception:
                 pass
             rd = ""
@@ -1444,6 +1469,9 @@ def run_desktop():
         keys = [k.strip() for k in keys_var.get().replace(";", ",").split(",") if k.strip()]
         if keys:
             cmd += ["--api-key", ",".join(keys)]
+        _ocr_lang_v = _ocr_value_for.get(ocr_lang_var.get(), "en")
+        if _ocr_lang_v and _ocr_lang_v != "en":
+            cmd += ["--ocr-lang"] + _ocr_lang_v.split()
         if model_var.get().strip():
             cmd += ["--model", model_var.get().strip()]
         if lama_var.get():
@@ -1472,27 +1500,6 @@ def run_desktop():
             with open(instr_path, "w", encoding="utf-8") as _inf:
                 _inf.write(instr_text + "\n")
             cmd += ["--instruction", instr_path]
-
-        
-        try:
-            if os.path.isfile(out_v):
-                os.remove(out_v)
-            elif os.path.isdir(out_v):
-                shutil.rmtree(out_v, ignore_errors=True)
-            _cr = str(out_v) + ".cache"
-            if os.path.isdir(_cr):
-                shutil.rmtree(_cr, ignore_errors=True)
-            for suf in ("_debug.pdf", "_debug.zip", "_debug.html", "_debug.psd", "_debug_imgs.zip"):
-                p = os.path.splitext(str(out_v))[0] + suf
-                if os.path.isfile(p):
-                    try:
-                        os.remove(p)
-                    except Exception:
-                        pass
-        except Exception as _e:
-            log_write(f"[!] پاکسازی خروجی قبلی: {_e}")
-        if "--no-resume" not in cmd:
-            cmd.append("--no-resume")
 
         log_box.config(state="normal")
         log_box.delete("1.0", "end")
@@ -2210,6 +2217,18 @@ def run_web():
             gr.Markdown("<div class='hint'>کلید از aistudio.google.com (Gemini) یا "
                         "platform.openai.com (ChatGPT) یا console.groq.com بگیرید. "
                         "تنظیمات وب فقط در مرورگر ذخیره می‌شود.</div>")
+            ocr_lang = gr.Dropdown(
+                choices=[
+                    ("انگلیسی", "en"),
+                    ("کره‌ای (+ انگلیسی)", "ko en"),
+                    ("ژاپنی (+ انگلیسی)", "ja en"),
+                    ("چینی (+ انگلیسی)", "zh en"),
+                    ("چندزبانه (کره‌ای/ژاپنی/چینی/انگلیسی)", "ko ja zh en"),
+                ],
+                value=str(cfg.get("ocr_lang", "en")),
+                label="زبان متن مانگا (OCR)",
+                elem_id="manga_ocr_lang",
+                info="زبان اصلی حباب‌ها — برای مانهوا فارسی/انگلیسی همان انگلیسی بماند.")
 
         
         with gr.Group(elem_classes=["stepcard"]):
@@ -2331,8 +2350,6 @@ def run_web():
                     "returncode": None,
                     "buf": [],
                     "t0": None,
-                    "log_frozen": False,   
-                    "last_sent_log": None, 
                 }
             return live_jobs[sid]
 
@@ -2401,7 +2418,7 @@ def run_web():
                     meta = {
                         "sid": sid,
                         "running": _job_running(job),
-                        "log": (job.get("log") or "")[-48000:],
+                        "log": (job.get("log") or "")[-24000:],
                         "ts": job.get("ts") or time.time(),
                         "download_path": job.get("download_path"),
                         "download_debug": job.get("download_debug"),
@@ -2414,7 +2431,6 @@ def run_web():
                         "html_debug": (job.get("html_debug") or "")[:500] and True,
                         "has_debug": bool(job.get("download_debug") or job.get("reader_debug_path")),
                         "want_debug": bool(job.get("want_debug")),
-                        "log_frozen": bool(job.get("log_frozen")),
                     }
                 path = os.path.join(SESS_DIR, f"{sid}.json")
                 with open(path, "w", encoding="utf-8") as f:
@@ -2459,8 +2475,6 @@ def run_web():
                         j["download_debug"] = meta.get("download_debug")
                     if meta.get("want_debug"):
                         j["want_debug"] = meta.get("want_debug")
-                    if meta.get("log_frozen") or ("✅ تمام شد" in (meta.get("log") or "")):
-                        j["log_frozen"] = True
                     j["ts"] = meta.get("ts") or time.time()
                     j["out_v"] = meta.get("out_v")
                     j["src"] = meta.get("src")
@@ -2554,41 +2568,39 @@ def run_web():
                 return out
 
             parent = os.path.dirname(str(out_v)) or "."
-
-            def _cache_dirs(prefix):
-                dirs = []
+            search_dirs = [
+                out_v if os.path.isdir(out_v) else None,
+            ]
+            _cache_subs = ("out", "out_safe_v3", "debug", "debug_safe_v3")
+            try:
                 cache_root = str(out_v) + ".cache"
-                if not os.path.isdir(cache_root):
-                    return dirs
-                try:
-                    names = [n for n in os.listdir(cache_root)
-                             if n.startswith(prefix) and os.path.isdir(os.path.join(cache_root, n))]
-                except Exception:
-                    return dirs
-                ranked = []
-                for name in names:
-                    p = os.path.join(cache_root, name)
-                    try:
-                        ranked.append((os.path.getmtime(p), p))
-                    except Exception:
-                        ranked.append((0, p))
-                ranked.sort(reverse=True)
-                if ranked:
-                    dirs.append(ranked[0][1])
-                return dirs
+                if os.path.isdir(cache_root):
+                    for sub in _cache_subs:
+                        search_dirs.append(os.path.join(cache_root, sub))
+                    for name in os.listdir(cache_root):
+                        if name.startswith("out") or name.startswith("debug"):
+                            search_dirs.append(os.path.join(cache_root, name))
+            except Exception:
+                pass
+            try:
+                for name in os.listdir(parent):
+                    if name.endswith(".cache"):
+                        cr = os.path.join(parent, name)
+                        for sub in _cache_subs:
+                            search_dirs.append(os.path.join(cr, sub))
+                        try:
+                            for subn in os.listdir(cr):
+                                if subn.startswith("out") or subn.startswith("debug"):
+                                    search_dirs.append(os.path.join(cr, subn))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            cache_debug = os.path.join(str(out_v) + ".cache", "debug_safe_v3")
+            if not os.path.isdir(cache_debug):
+                cache_debug = os.path.join(str(out_v) + ".cache", "debug")
 
-            out_dirs = [out_v if os.path.isdir(out_v) else None] + _cache_dirs("out")
-            dbg_dirs = _cache_dirs("debug")
-
-            for _vd in ("_pdf_view", "_debug_view"):
-                _vp = os.path.join(parent, _vd)
-                if os.path.isdir(_vp):
-                    try:
-                        shutil.rmtree(_vp, ignore_errors=True)
-                    except Exception:
-                        pass
-
-            imgs = _collect_imgs(out_dirs)
+            imgs = _collect_imgs(search_dirs)
             if not imgs and str(target).lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
                 imgs = [target]
 
@@ -2610,7 +2622,7 @@ def run_web():
 
             
             if not debug_imgs:
-                debug_imgs = _collect_imgs(dbg_dirs)
+                debug_imgs = _collect_imgs([cache_debug])
 
             try:
                 reader_html = build_reader_html(imgs, standalone=True)
@@ -2657,23 +2669,9 @@ def run_web():
                 extra = "\n⚠ تصاویر برای نمایشگر پیدا نشد — فقط دانلود فعال است."
             if debug_imgs or download_debug:
                 extra += f"\n🔍 دیباگ: {len(debug_imgs)} صفحه آماده نمایش/دانلود"
-            
-            with job["lock"]:
-                cur_log = (job.get("log") or "").rstrip()
-            
-            if not cur_log or cur_log.startswith("—") or cur_log.startswith("⏱ 0:00"):
-                
-                if buf:
-                    body = "\n".join(buf[-800:]).strip()
-                    cur_log = f"⏱ {dur_s}\n\n{body}" if body else cur_log
-            
-            if "✅ تمام شد" not in cur_log and "تمام شد (" not in cur_log:
-                final_log = cur_log + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند" + extra
-            else:
-                final_log = cur_log + extra
+            final_log = "\n".join(buf[-120:]) + f"\n\n✅ تمام شد ({dur_s}) — دکمه‌های نمایش و دانلود پایین فعال شدند" + extra
             with job["lock"]:
                 job["log"] = final_log
-                job["log_frozen"] = True  
                 job["download_path"] = target
                 job["download_debug"] = download_debug
                 job["html_state"] = reader_html
@@ -2687,13 +2685,9 @@ def run_web():
         def _start_job_reader(sid: str, proc: subprocess.Popen, t0: float) -> None:
             job = _get_job(sid)
 
-            def _fmt(buf_lines, elapsed=None):
-                el = int(elapsed if elapsed is not None else (time.time() - t0))
-                body = "\n".join(buf_lines) if buf_lines else "… در حال دریافت خروجی …"
-                
-                if body.count("\n") > 800:
-                    parts = body.split("\n")
-                    body = "…\n" + "\n".join(parts[-800:])
+            def _fmt(buf_lines):
+                el = int(time.time() - t0)
+                body = "\n".join(buf_lines[-120:]) if buf_lines else "… در حال دریافت خروجی …"
                 return f"⏱ {el // 60}:{el % 60:02d}\n\n{body}"
 
             def _reader():
@@ -2709,8 +2703,6 @@ def run_web():
                         fd = None
                     while True:
                         with job["lock"]:
-                            if job.get("log_frozen"):
-                                break
                             if job.get("proc") is None and not job.get("running"):
                                 break
                         ended = proc.poll() is not None
@@ -2736,17 +2728,15 @@ def run_web():
                                 line, partial = partial.split(b"\n", 1)
                                 text = line.decode("utf-8", "replace").rstrip("\r")
                                 buf.append(text)
-                                
-                                if len(buf) > 1200:
-                                    del buf[:-1000]
+                                if len(buf) > 400:
+                                    del buf[:-300]
                                 with job["lock"]:
-                                    if job.get("log_frozen"):
-                                        break
                                     job["buf"] = buf
                                     job["log"] = _fmt(buf)
                                     job["ts"] = time.time()
                                 n += 1
-                                if n % 5 == 0:
+                                
+                                if n % 2 == 0:
                                     _persist_job_meta(sid)
                         elif ended:
                             break
@@ -2760,8 +2750,7 @@ def run_web():
                         pass
                 except Exception as e:
                     with job["lock"]:
-                        if not job.get("log_frozen"):
-                            job["log"] = (job.get("log") or "") + f"\n⚠ reader: {e}"
+                        job["log"] = (job.get("log") or "") + f"\n⚠ reader: {e}"
                 finally:
                     rc = None
                     try:
@@ -2774,7 +2763,7 @@ def run_web():
                         job["running"] = False
                         job["returncode"] = rc
                         job["buf"] = buf
-                        if buf and not job.get("log_frozen"):
+                        if buf:
                             job["log"] = _fmt(buf)
                         job["ts"] = time.time()
                         job["done_event"] = True
@@ -2783,18 +2772,10 @@ def run_web():
                             _finalize_job_success(sid)
                         except Exception as e:
                             with job["lock"]:
-                                if not job.get("log_frozen"):
-                                    job["log"] = (job.get("log") or "") + f"\n⚠ finalize: {e}"
-                                    job["log_frozen"] = True
+                                job["log"] = (job.get("log") or "") + f"\n⚠ finalize: {e}"
                     elif rc not in (None, 0) and rc not in (-15, -9, 15, 9):
                         with job["lock"]:
-                            if not job.get("log_frozen"):
-                                job["log"] = (job.get("log") or "") + f"\n\n❌ خطا — کد خروج {rc}"
-                                job["log_frozen"] = True
-                    else:
-                        
-                        with job["lock"]:
-                            job["log_frozen"] = True
+                            job["log"] = (job.get("log") or "") + f"\n\n❌ خطا — کد خروج {rc}"
                     _persist_job_meta(sid)
 
             threading.Thread(target=_reader, daemon=True, name=f"manga-job-{sid[:8]}").start()
@@ -2802,7 +2783,7 @@ def run_web():
             def _heartbeat():
                 while True:
                     with job["lock"]:
-                        if job.get("log_frozen") or not _job_running(job):
+                        if not _job_running(job):
                             break
                         buf = list(job.get("buf") or [])
                         job["log"] = _fmt(buf)
@@ -2934,8 +2915,7 @@ def run_web():
     }}
 
     let keepLog = log;
-    const doneNow = (log || "").indexOf("تمام شد") >= 0 || (log || "").indexOf("✅") >= 0;
-    if (!doneNow && prevLog && log && prevLog.length > log.length + 40) {{
+    if (prevLog && log && prevLog.length > log.length + 40) {{
       keepLog = prevLog;
     }}
     if (prevLog && (!log || log.indexOf("— لاگ بعد") === 0)) {{
@@ -3058,34 +3038,7 @@ def run_web():
       || document.querySelector('[id*="manga_sid"] input');
   }};
 
-  const pinLog = () => {{
-    const el = findLogEl();
-    if (!el || el._mangaPinned) return;
-    el._mangaPinned = true;
-    el._stick = true;
-    el.addEventListener("scroll", () => {{
-      try {{ el._stick = (el.scrollHeight - el.scrollTop - el.clientHeight) < 60; }} catch (e) {{}}
-    }}, {{ passive: true }});
-    try {{
-      const d = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value");
-      if (d && d.set && d.get) {{
-        Object.defineProperty(el, "value", {{
-          get() {{ return d.get.call(el); }},
-          set(v) {{
-            const prev = d.get.call(el);
-            d.set.call(el, v);
-            if (String(v) !== String(prev) && el._stick !== false) {{
-              try {{ el.scrollTop = el.scrollHeight; }} catch (e) {{}}
-            }}
-          }},
-          configurable: true
-        }});
-      }}
-    }} catch (e) {{}}
-  }};
-
   const apply = () => {{
-    pinLog();
     try {{
       let job = {{}};
       try {{ job = JSON.parse(localStorage.getItem(JOB) || "{{}}"); }} catch (e) {{ job = {{}}; }}
@@ -3178,7 +3131,6 @@ def run_web():
 
   apply();
   [100, 300, 600, 1000, 2000, 3500, 5000].forEach((t) => setTimeout(apply, t));
-  setInterval(pinLog, 1000);
 
   try {{
     const saveFromDom = () => {{
@@ -3200,8 +3152,7 @@ def run_web():
         if (job.running && !runningNow && job.log && log.length <= job.log.length + 5) {{
           return;
         }}
-        const domDone = (log || "").indexOf("تمام شد") >= 0 || (log || "").indexOf("✅") >= 0;
-        if (job.log && job.log.length > log.length + 50 && !domDone) return;
+        if (job.log && job.log.length > log.length + 50) return;
         job.sid = sid;
         job.log = (job.log && job.log.length > log.length) ? job.log : log;
         job.ts = Date.now();
@@ -3248,6 +3199,7 @@ def run_web():
 
 
         def run_translation(sid, sid_box_v, inp_path_v, upload, provider_v, api_keys_v, model_v,
+                            ocr_lang_v,
                             out_fmt_v, quality_v, font_up,
                             workers_v, bubbles_v, timeout_v,
                             batchw_v, maxre_v, reqdelay_v, temp_v, readord_v,
@@ -3342,6 +3294,8 @@ def run_web():
             klist = [k.strip() for k in (api_keys_v or "").replace(";", ",").split(",") if k.strip()]
             if klist:
                 cmd += ["--api-key", ",".join(klist)]
+            if ocr_lang_v and str(ocr_lang_v).strip() and str(ocr_lang_v).strip() != "en":
+                cmd += ["--ocr-lang"] + [p for p in str(ocr_lang_v).split() if p]
             if model_v and str(model_v).strip():
                 cmd += ["--model", str(model_v).strip()]
             if use_lama_v:
@@ -3371,35 +3325,6 @@ def run_web():
             if not story_brief_v:
                 cmd += ["--no-brief"]
 
-            
-            try:
-                if out_v and os.path.isfile(out_v):
-                    os.remove(out_v)
-                elif out_v and os.path.isdir(out_v):
-                    shutil.rmtree(out_v, ignore_errors=True)
-                cache_root = str(out_v) + ".cache"
-                if os.path.isdir(cache_root):
-                    shutil.rmtree(cache_root, ignore_errors=True)
-                for suf in ("_debug.pdf", "_debug.zip", "_debug.html", "_debug.psd",
-                            "_debug_imgs.zip"):
-                    p = os.path.splitext(str(out_v))[0] + suf
-                    if os.path.isfile(p):
-                        try:
-                            os.remove(p)
-                        except Exception:
-                            pass
-                parent_o = os.path.dirname(str(out_v)) or "."
-                for _vd in ("_pdf_view", "_debug_view"):
-                    _vp = os.path.join(parent_o, _vd)
-                    if os.path.isdir(_vp):
-                        shutil.rmtree(_vp, ignore_errors=True)
-            except Exception as _ce:
-                print(f"[!] پاکسازی خروجی قبلی: {_ce}")
-
-            
-            if "--no-resume" not in cmd:
-                cmd += ["--no-resume"]
-
             t0 = time.time()
             with job["lock"]:
                 job["result_visible"] = False
@@ -3416,9 +3341,6 @@ def run_web():
                 job["out_v"] = out_v
                 job["src"] = src
                 job["running"] = True
-                job["want_debug"] = bool(web_debug_v)
-                job["log_frozen"] = False
-                job["last_sent_log"] = None
                 job["log"] = "⏱ 0:00\n\n▶ در حال شروع…"
                 job["ts"] = time.time()
 
@@ -3459,6 +3381,7 @@ def run_web():
 
         _click_kw = dict(
             inputs=[session_id, sid_box, inp_path, inp_upload, provider, api_keys, model,
+                    ocr_lang,
                     out_fmt, quality, font_upload,
                     workers, bubbles, timeout,
                     batchw, maxre, reqdelay, temp, readord,
@@ -3553,21 +3476,18 @@ def run_web():
                 mem_log = job.get("log") or ""
                 meta_log = meta.get("log") or ""
                 default_log = "— لاگ بعد از شروع ترجمه اینجا می‌آید —"
-                frozen = bool(job.get("log_frozen")) or ("✅ تمام شد" in mem_log) or ("✅ تمام شد" in meta_log)
 
-                
-                if not frozen:
-                    candidates = []
-                    if mem_log and mem_log != default_log and not mem_log.startswith("—"):
-                        candidates.append(mem_log)
-                    if meta_log and meta_log != default_log:
-                        candidates.append(meta_log)
-                    if client_log and client_log != default_log and not client_log.startswith("—"):
-                        candidates.append(client_log)
-                    if candidates:
-                        job["log"] = max(candidates, key=len)
-                elif frozen:
-                    job["log_frozen"] = True
+                candidates = []
+                if mem_log and mem_log != default_log and not mem_log.startswith("—"):
+                    candidates.append(mem_log)
+                if meta_log and meta_log != default_log:
+                    candidates.append(meta_log)
+                if client_log and client_log != default_log and not client_log.startswith("—"):
+                    candidates.append(client_log)
+
+                if candidates:
+                    
+                    job["log"] = max(candidates, key=len)
 
                 if meta.get("download_path") and not job.get("download_path"):
                     job["download_path"] = meta.get("download_path")
@@ -3760,17 +3680,10 @@ def run_web():
             job = _get_job(sid)
             meta = _load_job_meta(sid)
             with job["lock"]:
-                frozen = bool(job.get("log_frozen"))
                 mem_log = job.get("log") or ""
                 meta_log = meta.get("log") or ""
-                
-                mem_done = frozen or ("تمام شد" in mem_log) or ("✅" in mem_log)
-                
-                if (not frozen) and meta_log and not mem_done and (
-                    len(meta_log) > len(mem_log) or not mem_log or mem_log.startswith("—")
-                ):
+                if meta_log and (len(meta_log) > len(mem_log) or not mem_log or mem_log.startswith("—")):
                     job["log"] = meta_log
-                    mem_log = meta_log
                 if meta.get("result_visible") and not job.get("result_visible"):
                     job["result_visible"] = True
                 if meta.get("download_path") and not job.get("download_path"):
@@ -3783,11 +3696,6 @@ def run_web():
                     job["reader_debug_path"] = meta.get("reader_debug_path")
                 running = _job_running(job)
                 log = job.get("log") or ""
-                
-                last_sent = job.get("last_sent_log")
-                log_changed = (log != last_sent)
-                if log_changed:
-                    job["last_sent_log"] = log
                 vis = bool(job.get("result_visible"))
                 dl = job.get("download_path")
                 dl_dbg = job.get("download_debug")
@@ -3804,7 +3712,7 @@ def run_web():
                 gr.update(value=sid),
                 gr.update(value=sid),
                 gr.update(value=btn),
-                gr.update(value=log) if (log and log_changed) else gr.update(),
+                gr.update(value=log) if log else gr.update(),
                 gr.update(value=dl, visible=vis) if vis else gr.update(),
                 gr.update(visible=vis),
                 gr.update(visible=vis),
