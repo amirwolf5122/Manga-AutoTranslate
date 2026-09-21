@@ -1808,6 +1808,9 @@ textarea { scrollbar-color: var(--ink-line) #08080a !important; }
 .compact-upload label { position: static !important; margin: 4px 0 !important; }
 
 
+#manga_ocr_lang .wrap { padding: 0 !important; background: transparent !important; }
+#manga_ocr_lang svg { display: none !important; }
+
 footer { display: none !important; }
 
 #manga_live_log,
@@ -2509,15 +2512,19 @@ def run_web():
                 })
             except Exception:
                 pass
-            def _collect_imgs(root_paths):
+            def _collect_imgs(root_paths, exclude_debug=False):
                 found = []
                 seen = set()
                 for root in root_paths:
                     if not root:
                         continue
+                    if exclude_debug and "debug" in os.path.basename(str(root)).lower():
+                        continue
                     if os.path.isfile(root) and root.lower().endswith(
                         (".webp", ".png", ".jpg", ".jpeg")
                     ):
+                        if exclude_debug and "debug" in os.path.basename(root).lower():
+                            continue
                         if root not in seen:
                             seen.add(root)
                             found.append(root)
@@ -2530,6 +2537,8 @@ def run_web():
                         continue
                     for f in names:
                         if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
+                            if exclude_debug and ("debug" in f.lower() or "debug" in root.lower()):
+                                continue
                             p = os.path.join(root, f)
                             if p not in seen:
                                 seen.add(p)
@@ -2571,14 +2580,14 @@ def run_web():
             search_dirs = [
                 out_v if os.path.isdir(out_v) else None,
             ]
-            _cache_subs = ("out", "out_safe_v3", "debug", "debug_safe_v3")
+            _cache_subs = ("out", "out_safe_v3")
             try:
                 cache_root = str(out_v) + ".cache"
                 if os.path.isdir(cache_root):
                     for sub in _cache_subs:
                         search_dirs.append(os.path.join(cache_root, sub))
                     for name in os.listdir(cache_root):
-                        if name.startswith("out") or name.startswith("debug"):
+                        if name.startswith("out"):
                             search_dirs.append(os.path.join(cache_root, name))
             except Exception:
                 pass
@@ -2590,7 +2599,7 @@ def run_web():
                             search_dirs.append(os.path.join(cr, sub))
                         try:
                             for subn in os.listdir(cr):
-                                if subn.startswith("out") or subn.startswith("debug"):
+                                if subn.startswith("out"):
                                     search_dirs.append(os.path.join(cr, subn))
                         except Exception:
                             pass
@@ -2600,7 +2609,7 @@ def run_web():
             if not os.path.isdir(cache_debug):
                 cache_debug = os.path.join(str(out_v) + ".cache", "debug")
 
-            imgs = _collect_imgs(search_dirs)
+            imgs = _collect_imgs(search_dirs, exclude_debug=True)
             if not imgs and str(target).lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
                 imgs = [target]
 

@@ -1054,19 +1054,38 @@ class RapidOCRBackend:
         self._new_api = False
         try:
             from rapidocr import RapidOCR as NewRapidOCR
-            if str(lang).lower() in ("korean", "ko"):
+            _low = str(lang).lower()
+            _rec_params = None
+            if _low in ("korean", "ko"):
                 try:
                     from rapidocr import OCRVersion as _OV, ModelType as _MT, LangRec as _LR
-                    self.engine = NewRapidOCR(params={
-                        "Rec.lang_type": _LR.KOREAN,
+                    _rec_params = {
+                        "Rec.lang_type": getattr(_LR, "KOREAN", _LR.KOREAN),
                         "Rec.ocr_version": _OV.PPOCRV5,
                         "Rec.model_type": _MT.MOBILE,
-                    })
-                    self._new_api = True
-                    print(f"[+] RapidOCR (ONNX, PP-OCRv5 korean) آماده | lang={lang}")
-                    return
+                    }
                 except Exception as e:
-                    print(f"[!] مدل کره‌ای RapidOCR لود نشد ({e}) → مدل پیش‌فرض")
+                    print(f"[!] پیکربندی مدل کره‌ای RapidOCR نشد ({e}) → مدل پیش‌فرض")
+            elif _low in ("japan", "ja", "japanese"):
+                try:
+                    from rapidocr import OCRVersion as _OV, ModelType as _MT, LangRec as _LR
+                    _japan = getattr(_LR, "JAPAN", None)
+                    if _japan is not None:
+                        # ژاپنی فقط در PP-OCRv4 موبایل ترکیب معتبر دارد
+                        _rec_params = {
+                            "Rec.lang_type": _japan,
+                            "Rec.ocr_version": _OV.PPOCRV4,
+                            "Rec.model_type": _MT.MOBILE,
+                        }
+                    else:
+                        print("[!] LangRec.JAPAN در rapidocr نیست → مدل پیش‌فرض")
+                except Exception as e:
+                    print(f"[!] پیکربندی مدل ژاپنی RapidOCR نشد ({e}) → مدل پیش‌فرض")
+            if _rec_params is not None:
+                self.engine = NewRapidOCR(params=_rec_params)
+                self._new_api = True
+                print(f"[+] RapidOCR (ONNX, PP-OCRv5) آماده | lang={lang}")
+                return
             self.engine = NewRapidOCR()
             self._new_api = True
             print(f"[+] RapidOCR (ONNX, PP-OCRv5/v6) آماده | lang={lang}")
@@ -1709,7 +1728,6 @@ class MangaTranslator:
             print(f"[*] در حال بارگذاری PaddleOCR | lang={main_lang} device={device} ...")
             ocr_kwargs = dict(
                 lang=main_lang,
-                show_log=False,
                 text_det_thresh=0.25,
                 text_det_box_thresh=0.4,
                 text_det_unclip_ratio=1.8,
