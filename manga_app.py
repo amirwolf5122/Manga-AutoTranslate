@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 
 APP_NAME = "مانگا مترجم"
-APP_VER = "1.5"
+APP_VER = "1.14"
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGA_PY = os.path.join(HERE, "manga.py")
 WORK_DIR = os.path.join(HERE, "workspace")
@@ -27,7 +27,7 @@ MODELS_DIR = os.path.expanduser("~/.cache/manga_translator_models")
 KEY_ENV_ORDER = ("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY",
                  "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY",
                  "XAI_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "API_KEY")
-PROVIDERS = ["gemini", "openai", "chatgpt", "deepseek", "groq",
+PROVIDERS = ["gemini", "gemini-openai", "openai", "chatgpt", "deepseek", "groq",
              "xai", "grok", "together", "openrouter", "ollama"]
 
 DEFAULT_GEMINI_KEYS = []#",".join(["123:])
@@ -2231,7 +2231,7 @@ def run_web():
                 value=str(cfg.get("ocr_lang", "en")),
                 label="زبان متن مانگا (OCR)",
                 elem_id="manga_ocr_lang",
-                info="زبان اصلی حباب‌ها — برای مانهوا فارسی/انگلیسی همان انگلیسی بماند.")
+                info="زبان اصلی حباب‌ها — برای مانهوا فارسی/انگلیسی همان انگلیسی بماند.", scale=1)
 
         
         with gr.Group(elem_classes=["stepcard"]):

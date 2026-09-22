@@ -625,10 +625,21 @@ class LamaONNX:
         cache_root = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "manga_translator_models"
         cache_root.mkdir(parents=True, exist_ok=True)
 
+        _m = _mirror_model(cls.FILE)
+        if _m:
+            return _m
         print(f"[*] دانلود مدل LaMa ONNX از {cls.REPO} ...")
         if hf_hub_download is None:
             raise RuntimeError("huggingface_hub لازم است")
-        return hf_hub_download(repo_id=cls.REPO, filename=cls.FILE, cache_dir=cache_dir)
+        cand = hf_hub_download(repo_id=cls.REPO, filename=cls.FILE, cache_dir=cache_dir)
+        try:
+            import shutil as _sh
+            _dst = os.path.join(_model_cache_dir("det_models"), cls.FILE)
+            if not os.path.isfile(_dst):
+                _sh.copyfile(cand, _dst)
+        except Exception:
+            pass
+        return cand
 
     def _pick_size(self, w: int, h: int) -> int:
         m = max(int(w), int(h))
@@ -818,6 +829,10 @@ class RTDetrV2ONNXDetector:
             last_err = None
             for fname in self.DET_FILES:
                 try:
+                    _m = _mirror_model(fname)
+                    if _m:
+                        model_path = _m
+                        break
                     print(f"[*] دانلود مدل RT-DETR ONNX از {self.DET_REPO}/{fname} ...")
                     if hf_hub_download is None:
                         raise RuntimeError("huggingface_hub لازم است")
@@ -1046,6 +1061,102 @@ class RTDetrV2ONNXDetector:
         return MangaTranslator._drop_contained_boxes(cleaned, contain_thresh=0.68)
 
 
+# مدل‌های OCR داخل APK نیستند — mirror گیت‌هاب (در ایران در دسترس) اول،
+# modelscope بعد. rapidocr خودش SHA256 را بعداً وریفای می‌کند.
+_RAPIDOCR_MIRROR = ("https://github.com/amirwolf5121/Manga-AutoTranslate/"
+                    "releases/download/models/")
+_RAPIDOCR_MS = ("https://www.modelscope.cn/models/RapidAI/RapidOCR/"
+                "resolve/v3.9.2/onnx")
+_RAPIDOCR_FILES = {
+    "PP-OCRv6_det_small.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv6/det/PP-OCRv6_det_small.onnx",
+    "PP-OCRv6_rec_small.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx",
+    "ch_ppocr_mobile_v2.0_cls_mobile.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx",
+    "korean_PP-OCRv5_rec_mobile.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx",
+    "japan_PP-OCRv4_rec_mobile.onnx":
+        _RAPIDOCR_MS + "/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx",
+}
+
+
+def _dl_to(url, dst):
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=900) as r, \
+            open(dst + ".part", "wb") as f:
+        shutil.copyfileobj(r, f)
+    if os.path.getsize(dst + ".part") > 1000:
+        os.replace(dst + ".part", dst)
+        return dst
+    raise RuntimeError("فایل ناقص")
+
+
+def _model_cache_dir(sub):
+    d = os.path.join(os.environ.get("MANGA_FILES_DIR") or os.getcwd(), sub)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return d
+
+
+def _mirror_model(fname):
+    """اگر مدل در cache محلی نیست، از mirror گیت‌هاب دانلود کن → مسیر یا None."""
+    loc = os.path.join(_model_cache_dir("det_models"), fname)
+    if os.path.isfile(loc) and os.path.getsize(loc) > 1000:
+        return loc
+    try:
+        print(f"    [mirror] {fname} ...")
+        _dl_to(_RAPIDOCR_MIRROR + fname, loc)
+        return loc
+    except Exception as e:
+        print(f"    [!] mirror نشد: {e}")
+        try:
+            if os.path.isfile(loc + ".part"):
+                os.remove(loc + ".part")
+        except Exception:
+            pass
+        return None
+
+
+def _ensure_rapidocr_models(mdir, files=None):
+    """فایل‌های مدل غایب را از mirror (فال‌بک modelscope) دانلود می‌کند."""
+    import shutil
+    import urllib.request
+    wanted = files or list(_RAPIDOCR_FILES)
+    for fname in wanted:
+        dst = os.path.join(mdir, fname)
+        if os.path.isfile(dst) and os.path.getsize(dst) > 100_000:
+            continue
+        done = False
+        for url in (_RAPIDOCR_MIRROR + fname, _RAPIDOCR_FILES.get(fname)):
+            if not url:
+                continue
+            try:
+                print(f"  ⬇ {fname} ...")
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=300) as r,                         open(dst + ".part", "wb") as f:
+                    shutil.copyfileobj(r, f)
+                if os.path.getsize(dst + ".part") > 100_000:
+                    os.replace(dst + ".part", dst)
+                    print(f"  ✔ {fname}")
+                    done = True
+                    break
+            except Exception as e:
+                host = url.split("/")[2] if url else "?"
+                print(f"  [!] {fname} از {host} نشد: {e}")
+        if not done:
+            print(f"  [!] دانلود {fname} ناموفق — اینترنت/VPN را چک کن")
+        try:
+            if os.path.isfile(dst + ".part"):
+                os.remove(dst + ".part")
+        except Exception:
+            pass
+
+
 class RapidOCRBackend:
     
 
@@ -1071,7 +1182,6 @@ class RapidOCRBackend:
                     from rapidocr import OCRVersion as _OV, ModelType as _MT, LangRec as _LR
                     _japan = getattr(_LR, "JAPAN", None)
                     if _japan is not None:
-                        # ژاپنی فقط در PP-OCRv4 موبایل ترکیب معتبر دارد
                         _rec_params = {
                             "Rec.lang_type": _japan,
                             "Rec.ocr_version": _OV.PPOCRV4,
@@ -1081,17 +1191,35 @@ class RapidOCRBackend:
                         print("[!] LangRec.JAPAN در rapidocr نیست → مدل پیش‌فرض")
                 except Exception as e:
                     print(f"[!] پیکربندی مدل ژاپنی RapidOCR نشد ({e}) → مدل پیش‌فرض")
+            import os as _os
+            _mdir = _os.path.join(
+                _os.environ.get("MANGA_FILES_DIR") or _os.getcwd(),
+                "rapidocr_models")
+            try:
+                _os.makedirs(_mdir, exist_ok=True)
+            except Exception:
+                _mdir = None
+            _base = {"Global.model_root_dir": _mdir} if _mdir else {}
+            if _mdir:
+                try:
+                    _ensure_rapidocr_models(_mdir)
+                except Exception as _e:
+                    print(f"[!] پیش‌دانلود مدل‌ها ناموفق: {_e}")
             if _rec_params is not None:
-                self.engine = NewRapidOCR(params=_rec_params)
+                _p = dict(_rec_params)
+                _p.update(_base)
+                self.engine = NewRapidOCR(params=_p)
                 self._new_api = True
                 print(f"[+] RapidOCR (ONNX, PP-OCRv5) آماده | lang={lang}")
                 return
-            self.engine = NewRapidOCR()
+            self.engine = NewRapidOCR(params=_base)
             self._new_api = True
             print(f"[+] RapidOCR (ONNX, PP-OCRv5/v6) آماده | lang={lang}")
             return
-        except Exception:
-            pass
+        except Exception as e:
+            import traceback as _tb
+            print(f"[!] RapidOCR (API جدید) لود نشد: {e}")
+            print("[!] " + _tb.format_exc()[-900:])
         if not _HAS_RAPIDOCR:
             raise ImportError("pip install rapidocr (یا rapidocr-onnxruntime)")
         self.engine = RapidOCR()
@@ -1177,6 +1305,14 @@ PROVIDER_PRESETS = {
     "gemini": {
         "type": "gemini",
         "default_model": "gemini-3.8-flash",
+        "env_key": "GEMINI_API_KEY",
+    },
+    "gemini-openai": {
+        # Gemini از طریق endpoint سازگار با OpenAI — برای دستگاه‌هایی که
+        # SDK google-genai رویشان نصب نمی‌شود (اندروید: pydantic-core native)
+        "type": "openai",
+        "base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
+        "default_model": "gemini-2.5-flash",
         "env_key": "GEMINI_API_KEY",
     },
     "openai": {
@@ -1798,7 +1934,15 @@ class MangaTranslator:
             self.det = None
 
         if self.provider_type == "gemini":
-            if not _HAS_GEMINI:
+            if not _HAS_GEMINI and _HAS_OPENAI:
+                # اندروید: google-genai نصب‌شدنی نیست (pydantic-core native)
+                # → خودکار روی endpoint رسمی سازگار openai گوگل سوییچ کن
+                print("[!] google-genai روی این دستگاه نیست → "
+                      "Gemini از مسیر سازگار openai (SDK واقعی) اجرا می‌شود")
+                self.provider_cfg = PROVIDER_PRESETS["gemini-openai"]
+                self.provider_type = "openai"
+                self.api_base = self.provider_cfg["base_url"]
+            elif not _HAS_GEMINI:
                 raise ImportError(
                     "برای استفاده از Gemini باید google-genai نصب باشد:\n"
                     "  pip install google-genai"
