@@ -9,7 +9,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download models from ModelScope
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download models from ModelScope / Hugging Face
         run: |
           mkdir -p models
           base="https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx"
@@ -37,6 +40,8 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-          git add .
-          git add models/*
-          git diff --quiet && git diff --staged --quiet || (git commit -m "add" && git push)
+          git add models/
+          git diff --quiet && git diff --staged --quiet || (
+            git commit -m "Add/update OCR models"
+            git push
+          )
