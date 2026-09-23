@@ -1,0 +1,38 @@
+name: Mirror OCR models
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download models from ModelScope
+        run: |
+          mkdir -p models
+          base="https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx"
+          curl -fL --retry 3 -o models/PP-OCRv6_det_small.onnx        "$base/PP-OCRv6/det/PP-OCRv6_det_small.onnx"
+          curl -fL --retry 3 -o models/PP-OCRv6_rec_small.onnx        "$base/PP-OCRv6/rec/PP-OCRv6_rec_small.onnx"
+          curl -fL --retry 3 -o models/ch_ppocr_mobile_v2.0_cls_mobile.onnx "$base/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx"
+          curl -fL --retry 3 -o models/korean_PP-OCRv5_rec_mobile.onnx "$base/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx"
+          curl -fL --retry 3 -o models/japan_PP-OCRv4_rec_mobile.onnx  "$base/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile.onnx"
+          pd="https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/paddle"
+          curl -fL --retry 3 -o models/ppocr_keys_v1.txt      "$pd/PP-OCRv4/rec/ch_PP-OCRv4_rec_mobile/ppocr_keys_v1.txt"
+          curl -fL --retry 3 -o models/en_dict.txt            "$pd/PP-OCRv4/rec/en_PP-OCRv4_rec_mobile/en_dict.txt"
+          curl -fL --retry 3 -o models/korean_dict.txt        "$pd/PP-OCRv4/rec/korean_PP-OCRv4_rec_mobile/korean_dict.txt"
+          curl -fL --retry 3 -o models/japan_dict.txt         "$pd/PP-OCRv4/rec/japan_PP-OCRv4_rec_mobile/japan_dict.txt"
+          curl -fL --retry 3 -o models/arabic_dict.txt        "$pd/PP-OCRv4/rec/arabic_PP-OCRv4_rec_mobile/arabic_dict.txt"
+          hf="https://huggingface.co"
+          curl -fL --retry 3 -o models/detector-v4-s_int8.onnx "$hf/ogkalu/comic-text-and-bubble-detector/resolve/main/detector-v4-s_int8.onnx" || true
+          curl -fL --retry 3 -o models/detector.onnx           "$hf/ogkalu/comic-text-and-bubble-detector/resolve/main/detector.onnx" || true
+          curl -fL --retry 3 -o models/lama_fp32.onnx          "$hf/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx" || true
+          ls -la models
+
+      - name: Commit and Push Changes
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add models/*
+          git diff --quiet && git diff --staged --quiet || (git commit -m "add" && git push)
