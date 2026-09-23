@@ -1085,7 +1085,7 @@ class RTDetrV2ONNXDetector:
         return MangaTranslator._drop_contained_boxes(cleaned, contain_thresh=0.68)
 
 
-_RAPIDOCR_MIRROR = ("https://github.com/amirwolf5121/Manga-AutoTranslate/"
+_RAPIDOCR_MIRROR = ("https://github.com/amirwolf5122/Manga-AutoTranslate/"
                     "releases/download/models/")
 _RAPIDOCR_MS = ("https://www.modelscope.cn/models/RapidAI/RapidOCR/"
                 "resolve/v3.9.2/onnx")
