@@ -1,5 +1,5 @@
 # نصب دستی اپ اندروید مانگا مترجم
-
+## روش اول موجود نیست
 ## روش ۱ — دانلود از Releases (پیشنهادی)
 
 1. به صفحه [Releases](https://github.com/amirwolf5121/Manga-AutoTranslate/releases) برو
