@@ -9,10 +9,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download models from ModelScope / Hugging Face
+      - name: Download models from ModelScope
         run: |
           mkdir -p models
           base="https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2/onnx"
@@ -33,15 +30,17 @@ jobs:
           curl -fL --retry 3 -o models/lama_fp32.onnx          "$hf/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx" || true
           ls -la models
 
-      - name: Commit and Push Changes
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Ensure "models" release exists
         run: |
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          gh release view models -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+          gh release create models -R "$GITHUB_REPOSITORY" \
+            --title "OCR Models (mirror)" \
+            --notes "مدل‌های OCR برای دانلود در اپ اندروید — mirror سریع برای ایران"
+        env:
+          GH_TOKEN: ${{ github.token }}
 
-          git add models/
-          git diff --quiet && git diff --staged --quiet || (
-            git commit -m "Add/update OCR models"
-            git push
-          )
+      - name: Upload to models release
+        run: |
+          gh release upload models models/* -R "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
