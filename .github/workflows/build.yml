@@ -1,0 +1,107 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+  release:
+    types: [ published ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python 3.10 (buildPython چاکوپی — باید با پایتون داخل اپ هم‌نسخه باشد)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: local.properties
+        run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+      - name: Fetch vendored Python packages
+        run: |
+          python -m pip install --upgrade pip -q
+          python android/scripts/fetch_vendor.py --target android/app/src/main/python
+
+      - name: Build arm64-v8a
+        working-directory: android
+        run: |
+          gradle :app:assembleDebug \
+            -PchaquopyBuildPython="$(command -v python)" \
+            -PappAbis=arm64-v8a --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "$GITHUB_WORKSPACE/MangaTranslator-${{ github.ref_name }}-arm64.apk"
+
+      - name: Build armeabi-v7a
+        working-directory: android
+        run: |
+          gradle :app:assembleDebug \
+            -PchaquopyBuildPython="$(command -v python)" \
+            -PappAbis=armeabi-v7a --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "$GITHUB_WORKSPACE/MangaTranslator-${{ github.ref_name }}-armv7a.apk"
+
+      - name: Build universal (همه معماری‌ها)
+        working-directory: android
+        run: |
+          gradle :app:assembleDebug \
+            -PchaquopyBuildPython="$(command -v python)" --stacktrace
+          cp app/build/outputs/apk/debug/app-debug.apk \
+            "$GITHUB_WORKSPACE/MangaTranslator-${{ github.ref_name }}-universal.apk"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: manga-translator-apk
+          path: MangaTranslator-*.apk
+          if-no-files-found: error
+
+      - name: Put APKs in Releases (بیلد دستی)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          cp MangaTranslator-*-arm64.apk      MangaTranslator-arm64.apk
+          cp MangaTranslator-*-armv7a.apk     MangaTranslator-armv7a.apk
+          cp MangaTranslator-*-universal.apk  MangaTranslator-universal.apk
+          gh release view apk -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create apk -R "$GITHUB_REPOSITORY" --latest \
+              --title "APK — آخرین بیلد خودکار" \
+              --notes "خروجی آخرین اجرای موفق «Build Android APK». برای نسخه‌های رسمی به Releaseهای versionدار سر بزنید."
+          gh release edit apk -R "$GITHUB_REPOSITORY" \
+            --notes "خروجی بیلد شماره ${{ github.run_number }} — ${{ github.event.head_commit.message || 'اجرای دستی' }}"
+          gh release upload apk MangaTranslator-arm64.apk MangaTranslator-armv7a.apk MangaTranslator-universal.apk \
+            -R "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Publish engine files (mirror آپدیت درون‌اپ)
+        run: |
+          cp android/app/src/main/python/bridge.py .
+          cp android/app/src/main/python/extract_ui.py .
+          gh release view files -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 || \
+            gh release create files -R "$GITHUB_REPOSITORY" \
+              --title "Engine files (in-app update mirror)" \
+              --notes "manga.py / manga_app.py / bridge.py / extract_ui.py برای آپدیت خودکار اپ"
+          gh release upload files manga.py manga_app.py bridge.py extract_ui.py \
+            -R "$GITHUB_REPOSITORY" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Attach to Release (فقط وقتی بیلد از روی Release اجرا شده)
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: MangaTranslator-*.apk
