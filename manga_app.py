@@ -13,7 +13,7 @@ import time
 from datetime import datetime
 
 APP_NAME = "مانگا مترجم"
-APP_VER = "1.5"
+APP_VER = "1.7"
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGA_PY = os.path.join(HERE, "manga.py")
 WORK_DIR = os.path.join(HERE, "workspace")
@@ -27,7 +27,7 @@ MODELS_DIR = os.path.expanduser("~/.cache/manga_translator_models")
 KEY_ENV_ORDER = ("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY",
                  "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY",
                  "XAI_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "API_KEY")
-PROVIDERS = ["gemini", "openai", "chatgpt", "deepseek", "groq",
+PROVIDERS = ["gemini", "gemini-openai", "openai", "chatgpt", "deepseek", "groq",
              "xai", "grok", "together", "openrouter", "ollama"]
 
 DEFAULT_GEMINI_KEYS = []#",".join(["123:])
@@ -53,8 +53,8 @@ FONT_BUNDLES = [
     ("free_text",    "Vazirmatn-Regular.ttf", "متن بیرون حباب", [
         "https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Regular.ttf",
     ]),
-    ("shout",        "Lalezar-Regular.ttf", "داد خشم", [
-        "https://raw.githubusercontent.com/amirwolf5122/Manga-AutoTranslate/main/fonts/Lalezar-Regular.ttf",
+    ("shout",        "Lalezar-Fixed.ttf", "داد خشم", [
+        "https://raw.githubusercontent.com/amirwolf5122/Manga-AutoTranslate/main/fonts/Lalezar-Fixed.ttf",
         "https://raw.githubusercontent.com/rastikerdar/shabnam-font/master/dist/Shabnam-Bold.ttf",
     ]),
     ("comedy_shout", "Gandom.ttf", "داد کمدی", [
@@ -781,12 +781,30 @@ def run_desktop():
     keys_entry = ttk.Entry(card_ai, textvariable=keys_var, show="•")
     keys_entry.pack(fill="x")
 
+    OCR_LANG_CHOICES = [
+        ("انگلیسی", "en"),
+        ("کره‌ای (+ انگلیسی)", "ko en"),
+        ("ژاپنی (+ انگلیسی)", "ja en"),
+        ("چینی (+ انگلیسی)", "zh en"),
+        ("چندزبانه (کره‌ای/ژاپنی/چینی/انگلیسی)", "ko ja zh en"),
+    ]
+    _ocr_value_for = {lbl: val for lbl, val in OCR_LANG_CHOICES}
+    row_ai2 = ttk.Frame(card_ai); row_ai2.pack(fill="x", pady=(6, 0))
+    ocr_lang_var = tk.StringVar(value=next(
+        (lbl for lbl, val in OCR_LANG_CHOICES
+         if val == str(cfg.get("ocr_lang", "en"))), "انگلیسی"))
+    ttk.Label(row_ai2, text="زبان متن مانگا (OCR):").pack(side="right", padx=(0, 4))
+    ttk.Combobox(row_ai2, textvariable=ocr_lang_var,
+                 values=[lbl for lbl, _v in OCR_LANG_CHOICES],
+                 state="readonly", width=34).pack(side="right", padx=(0, 16))
+
     def _persist_api_desktop(*_a):
         try:
             cur = load_config()
             cur["api_keys"] = keys_var.get()
             cur["provider"] = prov_var.get()
             cur["model"] = model_var.get()
+            cur["ocr_lang"] = _ocr_value_for.get(ocr_lang_var.get(), "en")
             save_config(cur)
         except Exception:
             pass
@@ -804,6 +822,7 @@ def run_desktop():
     keys_var.trace_add("write", _schedule_api_save)
     prov_var.trace_add("write", _schedule_api_save)
     model_var.trace_add("write", _schedule_api_save)
+    ocr_lang_var.trace_add("write", _schedule_api_save)
 
     
     card_font = ttk.LabelFrame(tab_body, text=" فونت‌های لحن ", padding=10)
@@ -1450,6 +1469,9 @@ def run_desktop():
         keys = [k.strip() for k in keys_var.get().replace(";", ",").split(",") if k.strip()]
         if keys:
             cmd += ["--api-key", ",".join(keys)]
+        _ocr_lang_v = _ocr_value_for.get(ocr_lang_var.get(), "en")
+        if _ocr_lang_v and _ocr_lang_v != "en":
+            cmd += ["--ocr-lang"] + _ocr_lang_v.split()
         if model_var.get().strip():
             cmd += ["--model", model_var.get().strip()]
         if lama_var.get():
@@ -1785,6 +1807,9 @@ textarea { scrollbar-color: var(--ink-line) #08080a !important; }
 .compact-upload .empty .icon-wrap { display: none !important; }
 .compact-upload label { position: static !important; margin: 4px 0 !important; }
 
+
+#manga_ocr_lang .wrap { padding: 0 !important; background: transparent !important; }
+#manga_ocr_lang svg { display: none !important; }
 
 footer { display: none !important; }
 
@@ -2195,6 +2220,18 @@ def run_web():
             gr.Markdown("<div class='hint'>کلید از aistudio.google.com (Gemini) یا "
                         "platform.openai.com (ChatGPT) یا console.groq.com بگیرید. "
                         "تنظیمات وب فقط در مرورگر ذخیره می‌شود.</div>")
+            ocr_lang = gr.Dropdown(
+                choices=[
+                    ("انگلیسی", "en"),
+                    ("کره‌ای (+ انگلیسی)", "ko en"),
+                    ("ژاپنی (+ انگلیسی)", "ja en"),
+                    ("چینی (+ انگلیسی)", "zh en"),
+                    ("چندزبانه (کره‌ای/ژاپنی/چینی/انگلیسی)", "ko ja zh en"),
+                ],
+                value=str(cfg.get("ocr_lang", "en")),
+                label="زبان متن مانگا (OCR)",
+                elem_id="manga_ocr_lang",
+                info="زبان اصلی حباب‌ها — برای مانهوا فارسی/انگلیسی همان انگلیسی بماند.", scale=1)
 
         
         with gr.Group(elem_classes=["stepcard"]):
@@ -2475,15 +2512,19 @@ def run_web():
                 })
             except Exception:
                 pass
-            def _collect_imgs(root_paths):
+            def _collect_imgs(root_paths, exclude_debug=False):
                 found = []
                 seen = set()
                 for root in root_paths:
                     if not root:
                         continue
+                    if exclude_debug and "debug" in os.path.basename(str(root)).lower():
+                        continue
                     if os.path.isfile(root) and root.lower().endswith(
                         (".webp", ".png", ".jpg", ".jpeg")
                     ):
+                        if exclude_debug and "debug" in os.path.basename(root).lower():
+                            continue
                         if root not in seen:
                             seen.add(root)
                             found.append(root)
@@ -2496,6 +2537,8 @@ def run_web():
                         continue
                     for f in names:
                         if f.lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
+                            if exclude_debug and ("debug" in f.lower() or "debug" in root.lower()):
+                                continue
                             p = os.path.join(root, f)
                             if p not in seen:
                                 seen.add(p)
@@ -2537,14 +2580,14 @@ def run_web():
             search_dirs = [
                 out_v if os.path.isdir(out_v) else None,
             ]
-            _cache_subs = ("out", "out_safe_v3", "debug", "debug_safe_v3")
+            _cache_subs = ("out", "out_safe_v3")
             try:
                 cache_root = str(out_v) + ".cache"
                 if os.path.isdir(cache_root):
                     for sub in _cache_subs:
                         search_dirs.append(os.path.join(cache_root, sub))
                     for name in os.listdir(cache_root):
-                        if name.startswith("out") or name.startswith("debug"):
+                        if name.startswith("out"):
                             search_dirs.append(os.path.join(cache_root, name))
             except Exception:
                 pass
@@ -2556,7 +2599,7 @@ def run_web():
                             search_dirs.append(os.path.join(cr, sub))
                         try:
                             for subn in os.listdir(cr):
-                                if subn.startswith("out") or subn.startswith("debug"):
+                                if subn.startswith("out"):
                                     search_dirs.append(os.path.join(cr, subn))
                         except Exception:
                             pass
@@ -2566,7 +2609,7 @@ def run_web():
             if not os.path.isdir(cache_debug):
                 cache_debug = os.path.join(str(out_v) + ".cache", "debug")
 
-            imgs = _collect_imgs(search_dirs)
+            imgs = _collect_imgs(search_dirs, exclude_debug=True)
             if not imgs and str(target).lower().endswith((".webp", ".png", ".jpg", ".jpeg")):
                 imgs = [target]
 
@@ -3165,6 +3208,7 @@ def run_web():
 
 
         def run_translation(sid, sid_box_v, inp_path_v, upload, provider_v, api_keys_v, model_v,
+                            ocr_lang_v,
                             out_fmt_v, quality_v, font_up,
                             workers_v, bubbles_v, timeout_v,
                             batchw_v, maxre_v, reqdelay_v, temp_v, readord_v,
@@ -3259,6 +3303,8 @@ def run_web():
             klist = [k.strip() for k in (api_keys_v or "").replace(";", ",").split(",") if k.strip()]
             if klist:
                 cmd += ["--api-key", ",".join(klist)]
+            if ocr_lang_v and str(ocr_lang_v).strip() and str(ocr_lang_v).strip() != "en":
+                cmd += ["--ocr-lang"] + [p for p in str(ocr_lang_v).split() if p]
             if model_v and str(model_v).strip():
                 cmd += ["--model", str(model_v).strip()]
             if use_lama_v:
@@ -3344,6 +3390,7 @@ def run_web():
 
         _click_kw = dict(
             inputs=[session_id, sid_box, inp_path, inp_upload, provider, api_keys, model,
+                    ocr_lang,
                     out_fmt, quality, font_upload,
                     workers, bubbles, timeout,
                     batchw, maxre, reqdelay, temp, readord,
