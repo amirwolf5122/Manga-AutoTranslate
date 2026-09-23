@@ -57,22 +57,6 @@ pip install --target android/app/src/main/python --no-deps --no-compile \
 > روی CI این کار خودکار انجام می‌شود (step «Fetch vendored Python packages»
 > در `.github/workflows/build.yml`) — برای بیلد با Actions هیچ کاری لازم نیست.
 
-## بسته‌های حذف‌شده از ریپو (v1.24)
-
-این ۱۹ بسته (~۹۵۰ فایل) دیگر در گیت نیستند و موقع بیلد دانلود می‌شوند:
-openai، pydantic، rapidocr، huggingface_hub، httpx، httpcore، h11، anyio،
-sniffio، idna، certifi، distro، filelock، fsspec، packaging، beautifulsoup4،
-soupsieve، exceptiongroup، typing_extensions.
-
-فایل‌های خود پروژه (bridge.py، native_bridge.py، launcher.py، extract_ui.py،
-app_server.py و شیم‌های onnxruntime/ و pyclipper/) همچنان داخل ریپو هستند.
-
-## آپدیت خودکار اپ
-
-اپ در هر اجرا `manga.py` و `manga_app.py` را از این ریپو (raw/main) چک می‌کند؛
-اگر `APP_VER` داخل `manga_app.py` از نسخه نصب‌شده بالاتر باشد، خودش دانلود و جایگزین می‌کند —
-بدون نصب دوباره. پس برای آپدیت موتور فقط این دو فایل را پوش کن و شماره `APP_VER` را ببر بالا.
-
 ## اگر اپ بالا نیامد (رفع مشکل دستی)
 
 فایل‌های موتور در این مسیر هستند (بدون روت با فایل منیجر بعضی گوشی‌ها قابل دیدن نیست):
