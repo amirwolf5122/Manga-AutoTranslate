@@ -53,11 +53,8 @@ FONT_BUNDLES = [
     ("free_text",    "Vazirmatn-Regular.ttf", "متن بیرون حباب", [
         "https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Regular.ttf",
     ]),
-    # ⚠ v1.22: لالزارِ اصلی ۳۹ فرم ایزولهٔ presentation را در cmap نداشت → روی
-    # اندروید همه‌جا «مربع» می‌افتاد. فونت پچ‌شده (Lalezar-Fixed.ttf) در ریپوی
-    # خودمان است؛ نام جدید کشِ فونت قبلیِ نصب‌شده‌ها را هم می‌شکند.
     ("shout",        "Lalezar-Fixed.ttf", "داد خشم", [
-        "https://raw.githubusercontent.com/amirwolf5121/Manga-AutoTranslate/main/fonts/Lalezar-Fixed.ttf",
+        "https://raw.githubusercontent.com/amirwolf5122/Manga-AutoTranslate/main/fonts/Lalezar-Fixed.ttf",
         "https://raw.githubusercontent.com/rastikerdar/shabnam-font/master/dist/Shabnam-Bold.ttf",
     ]),
     ("comedy_shout", "Gandom.ttf", "داد کمدی", [
