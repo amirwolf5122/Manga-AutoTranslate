@@ -9,6 +9,22 @@ import traceback
 
 LOGS = []
 
+_GITHUB_RAW = ("https://raw.githubusercontent.com/"
+               "amirwolf5122/Manga-AutoTranslate/main/")
+_UPDATE_FILES = ("manga.py", "manga_app.py")
+
+
+def _local_ver(files_dir, name):
+
+    for base in (os.path.dirname(os.path.abspath(__file__)), files_dir):
+        try:
+            p = os.path.join(base, name)
+            if os.path.isfile(p):
+                return _pyfile_ver(p)
+        except Exception:
+            pass
+    return "0"
+
 
 def _log(msg):
     LOGS.append(str(msg))
@@ -93,7 +109,53 @@ def apply_updates(files_dir):
     upd_dir = os.path.join(files_dir, "updates")
     os.makedirs(upd_dir, exist_ok=True)
     check_bundled(files_dir)
-    _log("آپدیت آنلاین غیرفعال — نسخه موتور از داخل APK استفاده می‌شود.")
+    if os.path.isdir(upd_dir) and upd_dir not in sys.path:
+        sys.path.insert(0, upd_dir)
+
+    def _download(name, dst):
+        import urllib.request
+        req = urllib.request.Request(
+            _GITHUB_RAW + name, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = r.read()
+        if len(data) < 10000:
+            raise RuntimeError("فایل ناقص (%d بایت)" % len(data))
+        with open(dst, "wb") as f:
+            f.write(data)
+        return data
+
+    for name in _UPDATE_FILES:
+        new_p = os.path.join(upd_dir, name + ".new")
+        try:
+            data = _download(name, new_p)
+        except Exception as e:
+            _log("بررسی آپدیت %s ناموفق: %s" % (name, str(e)[:80]))
+            try:
+                if os.path.isfile(new_p):
+                    os.remove(new_p)
+            except Exception:
+                pass
+            continue
+        try:
+            remote_ver = _read_ver_from_str(
+                data.decode("utf-8", "ignore")[:8192])
+            cur = _file_ver(upd_dir, name)
+            if cur == "0":
+                cur = _local_ver(files_dir, name)
+            if remote_ver != "0" and _cmp_ver(remote_ver, cur) > 0:
+                os.replace(new_p, os.path.join(upd_dir, name))
+                _stamp(upd_dir, name, remote_ver)
+                _log("آپدیت نصب شد: %s v%s (قبلی v%s) — از اجرای بعدی فعال می‌شود."
+                     % (name, remote_ver, cur))
+            else:
+                try:
+                    os.remove(new_p)
+                except Exception:
+                    pass
+                _stamp(upd_dir, name, remote_ver if remote_ver != "0" else cur)
+                _log("%s به‌روز است (v%s)." % (name, cur))
+        except Exception:
+            traceback.print_exc()
     return upd_dir
 
 
