@@ -562,6 +562,8 @@ def _run(job):
                     api_key=keys or ["placeholder"],
                     provider=str(p.get("provider") or "gemini"),
                     model_name=(str(p.get("model")) or None) if p.get("model") else None,
+                    api_base=(str(p.get("api_base") or "").strip()
+                              or _cfg("api_base") or None) or None,
                     ocr_langs=langs,
                     font_path=fp,
                     reading_order=str(p.get("readord") or "rtl"),
