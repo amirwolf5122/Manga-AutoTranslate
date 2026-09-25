@@ -116,7 +116,7 @@ python manga_app.py -- -i input -o out.psd --font fonts/Vazirmatn-Bold.ttf --api
 
 نسخهٔ اندروید (Chaquopy — همان موتور `manga.py` روی گوشی) هم دارد:
 
-- دانلود APK از [Releases](https://github.com/amirwolf5121/Manga-AutoTranslate/releases) — یا بیلد از سورس با Gradle / GitHub Actions
+- دانلود APK از [Releases](https://github.com/amirwolf5122/Manga-AutoTranslate/releases) — یا بیلد از سورس با Gradle / GitHub Actions
 - راهنمای کامل نصب، بیلد و رفع مشکل: [`android/README.md`](android/README.md)
 - OCR روی گوشی با ML Kit (اگر نبود RapidOCR)؛ فونت‌ها و مدل‌ها بار اول خودکار دانلود می‌شوند
 
@@ -236,7 +236,7 @@ Runnerهای GitHub معمولاً GPU ندارند؛ اجرا روی CPU است
 ### ۴) اجرای لوکال
 
 ```bash
-git clone https://github.com/amirwolf512k/Manga-AutoTranslate.git
+git clone https://github.com/amirwolf5122/Manga-AutoTranslate.git
 cd Manga-AutoTranslate
 
 Manga.bat    # ویندوز — منو: App / Web / CLI
