@@ -2591,20 +2591,6 @@ def run_web():
                             search_dirs.append(os.path.join(cache_root, name))
             except Exception:
                 pass
-            try:
-                for name in os.listdir(parent):
-                    if name.endswith(".cache"):
-                        cr = os.path.join(parent, name)
-                        for sub in _cache_subs:
-                            search_dirs.append(os.path.join(cr, sub))
-                        try:
-                            for subn in os.listdir(cr):
-                                if subn.startswith("out"):
-                                    search_dirs.append(os.path.join(cr, subn))
-                        except Exception:
-                            pass
-            except Exception:
-                pass
             cache_debug = os.path.join(str(out_v) + ".cache", "debug_safe_v3")
             if not os.path.isdir(cache_debug):
                 cache_debug = os.path.join(str(out_v) + ".cache", "debug")
@@ -3266,6 +3252,22 @@ def run_web():
             base = smart_output_base(str(src))
             user_out_dir = os.path.join(OUT_DIR, sid[:12])
             os.makedirs(user_out_dir, exist_ok=True)
+            _prev_src = ""
+            with job["lock"]:
+                _prev_src = str(job.get("src") or "")
+            if _prev_src and _prev_src != str(src):
+                try:
+                    for _n in os.listdir(user_out_dir):
+                        _p = os.path.join(user_out_dir, _n)
+                        if os.path.isdir(_p):
+                            shutil.rmtree(_p, ignore_errors=True)
+                        else:
+                            try:
+                                os.remove(_p)
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
             out_v = os.path.join(user_out_dir, base + ext)
 
             cmd = [sys.executable, "-u", MANGA_PY, "-i", str(src), "-o", out_v,

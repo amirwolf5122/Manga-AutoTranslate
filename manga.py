@@ -138,8 +138,16 @@ def _ort_has_cuda() -> bool:
         return "CUDAExecutionProvider" in _ort.get_available_providers()
     except Exception:
         return False
+
+
+def _torch_available() -> bool:
+    try:
+        import torch  
+        return True
+    except Exception:
+        return False
 try:
-    import java  # noqa: F401
+    import java  
     _IS_ANDROID = True
 except Exception:
     _IS_ANDROID = False
@@ -811,6 +819,178 @@ class LamaMangaONNX:
         predicted = cv2.resize(o[:rh, :rw], (ow, oh), interpolation=cv2.INTER_LANCZOS4)
         result = img_rgb.copy()
         result[original_mask] = predicted[original_mask]
+        return Image.fromarray(result)
+
+
+class LamaTorch:
+    FILE = "big-lama.pt"
+    FALLBACK_URL = ("https://github.com/enesmsahin/simple-lama-inpainting/"
+                    "releases/download/v0.1.0/big-lama.pt")
+    CPU_MAX_SIDE = 1280
+    ANDROID_MAX_SIDE = 768
+
+    def __init__(self, model_path: Optional[str] = None, prefer_gpu: bool = True,
+                 cache_dir: Optional[str] = None, max_side: Optional[int] = None):
+        import torch
+        self._torch = torch
+        self.device = torch.device(
+            "cuda" if (prefer_gpu and torch.cuda.is_available()) else "cpu"
+        )
+        if not model_path or not os.path.isfile(model_path):
+            model_path = self._download_model(cache_dir=cache_dir)
+        self.model_path = model_path
+        self.model = torch.jit.load(model_path, map_location=self.device)
+        self.model.eval()
+        if max_side is not None:
+            self.max_side = int(max_side)
+        elif _IS_ANDROID:
+            self.max_side = self.ANDROID_MAX_SIDE
+        else:
+            self.max_side = None if self.device.type == "cuda" else self.CPU_MAX_SIDE
+        print(
+            f"[+] big-LaMa (TorchScript) آماده | device={self.device.type} | "
+            f"max_side={'کامل' if not self.max_side else self.max_side}"
+        )
+
+    @classmethod
+    def _download_model(cls, cache_dir: Optional[str] = None) -> str:
+        env_p = os.environ.get("LAMA_MODEL")
+        if env_p and os.path.isfile(env_p):
+            return env_p
+        m = _mirror_model(cls.FILE)
+        if m:
+            return m
+        dst = os.path.join(_model_cache_dir("det_models"), cls.FILE)
+        if os.path.isfile(dst) and os.path.getsize(dst) > 1_000_000:
+            print(f"[*] مدل big-lama.pt از کش: {dst}")
+            return dst
+        last = None
+        for url in (_RAPIDOCR_MIRROR + cls.FILE, cls.FALLBACK_URL):
+            try:
+                print(f"[*] دانلود مدل big-lama.pt از {url.split('/')[2]} ...")
+                _dl_to(url, dst, name=cls.FILE)
+                return dst
+            except Exception as e:
+                last = e
+                print(f"    [!] دانلود از {url.split('/')[2]} نشد: {e}")
+                try:
+                    if os.path.isfile(dst + ".part"):
+                        os.remove(dst + ".part")
+                except Exception:
+                    pass
+        raise RuntimeError(f"دانلود big-lama.pt ناموفق: {last}")
+
+    @staticmethod
+    def _ceil_mod(x: int, mod: int) -> int:
+        return x if x % mod == 0 else (x // mod + 1) * mod
+
+    def __call__(self, image, mask):
+        torch = self._torch
+        if isinstance(image, np.ndarray):
+            if image.ndim == 3 and image.shape[2] in (3, 4):
+                img_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            else:
+                img_rgb = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        else:
+            img_rgb = np.array(image.convert("RGB"))
+        if isinstance(mask, np.ndarray):
+            if mask.ndim == 3:
+                mask_u8 = mask[..., 0] if mask.shape[2] == 1 else cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+            else:
+                mask_u8 = mask
+        else:
+            mask_u8 = np.array(mask.convert("L"))
+        if mask_u8.shape != img_rgb.shape[:2]:
+            raise ValueError("Image and mask dimensions must match")
+        m_full = mask_u8 > 0
+        if not np.any(m_full):
+            return Image.fromarray(img_rgb.copy())
+        oh, ow = img_rgb.shape[:2]
+
+        if max(oh, ow) > 2.5 * min(oh, ow):
+            return self._call_banded(img_rgb, m_full)
+        return self._call_single(img_rgb, m_full)
+
+    _BAND_OVERLAP = 96
+
+    def _call_banded(self, img_rgb: np.ndarray, m_full: np.ndarray):
+        oh, ow = img_rgb.shape[:2]
+        out = img_rgb.copy()
+        vertical = oh >= ow
+        L = oh if vertical else ow
+        short = ow if vertical else oh
+        band = int(max(1024, min(L, short * 2)))
+        ov = self._BAND_OVERLAP
+        step = max(1, band - ov)
+        starts = list(range(0, L, step))
+        if starts and starts[-1] + ov >= L and len(starts) > 1:
+            starts.pop()
+        for s in starts:
+            e = min(L, s + band)
+            if vertical:
+                sub_img = img_rgb[s:e]
+                sub_m = m_full[s:e]
+            else:
+                sub_img = img_rgb[:, s:e]
+                sub_m = m_full[:, s:e]
+            if not sub_m.any():
+                continue
+            res = np.array(self._call_single(sub_img, sub_m))
+            core = np.zeros_like(sub_m)
+            a = 0 if s == 0 else ov // 2
+            b = (e - s) if e == L else (e - s) - ov // 2
+            if a >= b:
+                a, b = 0, e - s
+            if vertical:
+                core[a:b, :] = True
+            else:
+                core[:, a:b] = True
+            take = sub_m & core
+            if not take.any():
+                continue
+            if vertical:
+                out[s:e][take] = res[take]
+            else:
+                out[:, s:e][take] = res[take]
+        return Image.fromarray(out)
+
+    def _call_single(self, img_rgb: np.ndarray, m_full: np.ndarray):
+        torch = self._torch
+        oh, ow = img_rgb.shape[:2]
+
+        scale = 1.0
+        if self.max_side and max(oh, ow) > self.max_side:
+            scale = self.max_side / float(max(oh, ow))
+        rw, rh = max(8, int(round(ow * scale))), max(8, int(round(oh * scale)))
+        if scale != 1.0:
+            interp = cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC
+            img_np = cv2.resize(img_rgb, (rw, rh), interpolation=interp)
+            m0 = cv2.resize(m_full.astype(np.uint8), (rw, rh),
+                            interpolation=cv2.INTER_NEAREST) > 0
+        else:
+            img_np = img_rgb
+            m0 = m_full
+
+        ph, pw = self._ceil_mod(rh, 8), self._ceil_mod(rw, 8)
+        if (ph, pw) != (rh, rw):
+            img_p = np.pad(img_np, ((0, ph - rh), (0, pw - rw), (0, 0)), mode="symmetric")
+            msk_p = np.pad(m0.astype(np.float32), ((0, ph - rh), (0, pw - rw)), mode="symmetric")
+        else:
+            img_p = img_np
+            msk_p = m0.astype(np.float32)
+
+        x = torch.from_numpy(np.ascontiguousarray(img_p.astype(np.float32) / 255.0)) \
+                 .permute(2, 0, 1)[None].to(self.device)
+        mk = torch.from_numpy((msk_p > 0).astype(np.float32))[None, None].to(self.device)
+        with torch.inference_mode():
+            out = self.model(x, mk)
+        res = out[0].permute(1, 2, 0).detach().float().cpu().numpy()
+        res = np.clip(res * 255, 0, 255).astype(np.uint8)[:rh, :rw]
+
+        if scale != 1.0:
+            res = cv2.resize(res, (ow, oh), interpolation=cv2.INTER_LANCZOS4)
+        result = img_rgb.copy()
+        result[m_full] = res[m_full]
         return Image.fromarray(result)
 
 
@@ -1749,22 +1929,24 @@ class MangaTranslator:
             pass
         return 8.0
 
-    def _decide_lama(self, force_gpu: Optional[bool]) -> bool:
-        
+    def _decide_lama(self, force_gpu: Optional[bool],
+                     force_lama: bool = False) -> bool:
+
         has_ort = ort is not None
+        has_torch = _torch_available()
         has_cuda = self._detect_torch_cuda() or _ort_has_cuda()
         vram = self._cuda_vram_gb()
         name = self._cuda_device_name()
 
-        if force_gpu is False:
+        if force_gpu is False and not force_lama:
             print("[*] --cpu → پاک‌سازی OpenCV سریع.")
             return False
 
-        if not has_ort:
-            print("[*] onnxruntime نیست → OpenCV inpaint.")
+        if not has_ort and not has_torch:
+            print("[*] نه onnxruntime هست و نه torch → OpenCV inpaint.")
             return False
 
-        if _on_android() and force_gpu is None:
+        if _on_android() and force_gpu is None and not force_lama:
             total = self._total_ram_gb()
             if total and total < self._ANDROID_LAMA_MIN_TOTAL_GB:
                 print(f"[*] خودکار اندروید: رم کل گوشی {total:.1f}GB "
@@ -1776,11 +1958,15 @@ class MangaTranslator:
             return True
 
         if force_gpu is True:
-            print(f"[*] --gpu → LaMa ONNX فعال ({name or 'CUDA'}, {vram:.1f} GB).")
+            print(f"[*] --gpu → big-LaMa فعال ({name or 'CUDA'}, {vram:.1f} GB).")
+            return True
+
+        if force_lama:
+            print("[*] --lama → پاک‌سازی big-LaMa فعال (روی CPU کندتر ولی تمیزتر).")
             return True
 
         if has_cuda and (vram <= 0 or vram >= self._LAMA_MIN_VRAM_GB):
-            print(f"[*] GPU مناسب ({name or 'CUDA'}, {vram:.1f} GB) → LaMa ONNX.")
+            print(f"[*] GPU مناسب ({name or 'CUDA'}, {vram:.1f} GB) → big-LaMa.")
             return True
 
         if has_cuda:
@@ -1801,6 +1987,7 @@ class MangaTranslator:
         font_path: Optional[str] = None,
         reading_order: str = "rtl",
         gpu: Optional[bool] = None,
+        force_lama: bool = False,
         group_margin: int = 5,
         inpaint_radius: int = 3,
         mask_padding: int = 3,
@@ -1861,8 +2048,13 @@ class MangaTranslator:
         self._api_keys: List[str] = keys
         self._key_index: int = 0
         self._ocr_lock = threading.Lock()
-        self._api_lock = threading.Lock()  
-        self._tls = threading.local()  
+        self._api_lock = threading.Lock()
+        self._tls = threading.local()
+        self._pace_lock = threading.Lock()
+        self._fire_times: List[float] = []
+        self._key_cooldown_until: Dict[str, float] = {}
+        self.gemini_rpm_budget = 5
+        self._daily_dead: Dict[Tuple[str, str], bool] = {}
 
         
         self.model_name = (model_name or self.provider_cfg.get("default_model") or "gemini-3.8-flash").strip()
@@ -1872,11 +2064,7 @@ class MangaTranslator:
         self.api_base = api_base or self.provider_cfg.get("base_url")
 
         self.font_path = font_path
-        
-        
-        
-        
-        
+
         self.font_by_style: Dict[str, str] = {
             "normal": font_path,
             "shout": font_path,
@@ -1970,7 +2158,7 @@ class MangaTranslator:
 
         self.use_gpu = ocr_gpu
 
-        self.use_lama = self._decide_lama(force_gpu=gpu)
+        self.use_lama = self._decide_lama(force_gpu=gpu, force_lama=force_lama)
         self._inpainter_name = "OpenCV"
 
         self.ocr_langs = ocr_langs or ["en"]
@@ -2170,25 +2358,30 @@ class MangaTranslator:
                       f"{cores} هستهٔ CPU → LaMa-Manga روی CPU اجرا می‌شود "
                       f"(کندتر ولی تمیزتر از OpenCV).")
             try:
-                print("    [*] بارگذاری LaMa-Manga ONNX (fine-tune مانگا) ...")
-                self._lama = LamaMangaONNX(
-                    prefer_gpu=self.use_gpu,
-                    threads=max(1, int(getattr(self, "max_workers", 2) or 2)),
-                )
-                self._inpainter_name = "LaMa-Manga"
+                print("    [*] بارگذاری big-lama.pt (TorchScript) ...")
+                self._lama = LamaTorch(prefer_gpu=self.use_gpu)
+                self._inpainter_name = "big-LaMa"
             except Exception as e:
-                print(f"    [!] LaMa-Manga ناموفق ({e}) → LaMa ONNX")
+                print(f"    [!] big-LaMa ناموفق ({e}) → LaMa-Manga ONNX")
                 try:
-                    self._lama = LamaONNX(
+                    self._lama = LamaMangaONNX(
                         prefer_gpu=self.use_gpu,
                         threads=max(1, int(getattr(self, "max_workers", 2) or 2)),
                     )
-                    self._inpainter_name = "LaMa"
-                except Exception as e3:
-                    print(f"    [!] LaMa هم ناموفق ({e3}) → OpenCV")
-                    self.use_lama = False
-                    self._lama = None
-                    self._inpainter_name = "OpenCV"
+                    self._inpainter_name = "LaMa-Manga"
+                except Exception as e2:
+                    print(f"    [!] LaMa-Manga ناموفق ({e2}) → LaMa ONNX")
+                    try:
+                        self._lama = LamaONNX(
+                            prefer_gpu=self.use_gpu,
+                            threads=max(1, int(getattr(self, "max_workers", 2) or 2)),
+                        )
+                        self._inpainter_name = "LaMa"
+                    except Exception as e3:
+                        print(f"    [!] LaMa هم ناموفق ({e3}) → OpenCV")
+                        self.use_lama = False
+                        self._lama = None
+                        self._inpainter_name = "OpenCV"
         return self._lama
 
     @staticmethod
@@ -2629,22 +2822,94 @@ class MangaTranslator:
         if index is not None:
             self._model_index = index
 
+    def _pace_before_gemini_call(self) -> None:
+        try:
+            now = time.monotonic()
+            wait = 0.0
+            with self._pace_lock:
+                hist = [t for t in self._fire_times if now - t < 60.0]
+                self._fire_times = hist
+                budget = self._global_min_interval()
+                max_burst = max(1, int(round(60.0 / budget)))
+                if len(hist) >= max_burst:
+                    wait = max(0.0, budget - (now - hist[0]))
+                self._fire_times.append(now + wait)
+            if wait > 0:
+                time.sleep(min(wait + 0.05, 30.0))
+        except Exception:
+            pass
+
+    def _global_min_interval(self) -> float:
+        n_keys = max(1, len(getattr(self, "_api_keys", []) or [1]))
+        per_key = float(getattr(self, "gemini_rpm_budget", 8) or 8)
+        return 60.0 / max(1.0, per_key * n_keys)
+
+    @staticmethod
+    def _quota_retry_delay(err: Exception) -> float:
+        try:
+            s = str(err)
+            m = re.search(r"retryDelay['\"]?\s*[:=]\s*['\"]?(\d+(?:\.\d+)?)\s*s", s)
+            if m:
+                return float(m.group(1))
+            m = re.search(r"[Rr]etry-[Aa]fter['\"]?\s*[:=]\s*['\"]?(\d+)", s)
+            if m:
+                return float(m.group(1))
+            m = re.search(r"(\d+(?:\.\d+)?)\s*s(?:econds?)?\s+(?:until|before)", s)
+            if m:
+                return float(m.group(1))
+        except Exception:
+            pass
+        return 0.0
+
+    @staticmethod
+    def _is_daily_quota_error(err: Exception) -> bool:
+        s = str(err or "")
+        return ("PerDay" in s
+                or "GenerateRequestsPerDay" in s
+                or "GenerateContentDaily" in s
+                or "requests per day" in s.lower()
+                or "daily" in s.lower() and "quota" in s.lower())
+
+    def _current_api_key(self) -> str:
+        key = getattr(self, "_tls", None) and getattr(self._tls, "api_key", None)
+        if key:
+            return key
+        if 0 <= self._key_index < len(self._api_keys):
+            return self._api_keys[self._key_index]
+        return ""
+
+    def _mark_key_cooldown(self, err: Exception) -> float:
+        try:
+            d = self._quota_retry_delay(err)
+            if d >= 15.0:
+                key = getattr(self, "_tls", None) and getattr(self._tls, "api_key", None)
+                if key:
+                    with self._pace_lock:
+                        self._key_cooldown_until[key] = time.monotonic() + min(d + 2.0, 300.0)
+                    print(f"    [*] کلید فعلی تا {d:.0f}s استراحت می‌کند (retryDelay گوگل).")
+            return d
+        except Exception:
+            return 0.0
+
     def _pick_random_api_key(self, *, reason: str = "صفحه جدید") -> None:
-        
+
         if not self._api_keys:
             return
         if len(self._api_keys) == 1:
             self._apply_api_key(self._api_keys[0])
             return
-        
-        used = set()
-        tls = getattr(self, "_tls", None)
-        idx = random.randrange(len(self._api_keys))
+
+        now = time.monotonic()
+        ok_idx = [i for i, k in enumerate(self._api_keys)
+                  if now >= self._key_cooldown_until.get(k, 0.0)]
+        pool = ok_idx or list(range(len(self._api_keys)))
+        idx = random.choice(pool)
         key = self._api_keys[idx]
         self._key_index = idx
         self._apply_api_key(key)
+        cd = "" if ok_idx else " (همه در استراحت)"
         print(f"    [*] کلید تصادفی {idx + 1}/{len(self._api_keys)} "
-              f"({reason}) | {self._mask_key(key)}")
+              f"({reason}) | {self._mask_key(key)}{cd}")
 
     @staticmethod
     def _clahe_enhance(image: np.ndarray) -> np.ndarray:
@@ -3915,7 +4180,7 @@ class MangaTranslator:
             fit = np.linalg.lstsq(samples[keep], ring_px[keep], rcond=None)[0]
             error = np.max(np.abs(samples @ fit - ring_px), axis=1)
             keep = error <= max(5.0, float(np.median(error)) * 2.5)
-            if keep.sum() < max(60, 0.8 * len(samples)):
+            if keep.sum() < max(60, 0.55 * len(samples)):
                 return None
         if float(np.percentile(error[keep], 90)) > 6.0:
             return None
@@ -3929,9 +4194,7 @@ class MangaTranslator:
 
     @staticmethod
     def _mask_clusters(mask: np.ndarray, pad: int = 18, max_clusters: int = 14) -> List[Tuple[int, int, int, int]]:
-        
-        
-        
+
         n, _lab, st, _ = cv2.connectedComponentsWithStats(
             (mask > 0).astype(np.uint8), connectivity=8
         )
@@ -3978,6 +4241,31 @@ class MangaTranslator:
             (max(0, b[0]), max(0, b[1]), b[2], b[3]) for b in boxes
         ]
 
+    @staticmethod
+    def _wall_lines(image: np.ndarray, max_side: int = 1600) -> Optional[np.ndarray]:
+        try:
+            g = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            oh, ow = g.shape[:2]
+            sc = min(1.0, float(max_side) / float(max(oh, ow)))
+            if sc < 1.0:
+                g = cv2.resize(g, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
+            e = cv2.Canny(g, 60, 150)
+            e = cv2.dilate(e, np.ones((3, 3), np.uint8), iterations=1)
+            n, lab, st, _ = cv2.connectedComponentsWithStats(e, 8)
+            wall = np.zeros_like(e)
+            lim = 0.16 * max(e.shape)
+            for i in range(1, n):
+                bw = int(st[i, cv2.CC_STAT_WIDTH])
+                bh = int(st[i, cv2.CC_STAT_HEIGHT])
+                ls, ss = max(bw, bh), min(bw, bh)
+                if ss <= 14 and ls >= lim:
+                    wall[lab == i] = 255
+            if sc < 1.0:
+                wall = cv2.resize(wall, (ow, oh), interpolation=cv2.INTER_NEAREST)
+            return wall
+        except Exception:
+            return None
+
     def clean_image(self, image: np.ndarray, regions: List[TextRegion]) -> np.ndarray:
         mask = self._build_text_mask(image, regions)
         if not np.any(mask):
@@ -3990,12 +4278,10 @@ class MangaTranslator:
             pass
 
         cleaned = image.copy()
-        lama = None
-        lama_loaded = False
         counts = {"flat": 0, "LaMa": 0, "OpenCV": 0}
-        _budget_logged = False
-        _lama_budget = 10 if _IS_ANDROID else 10 ** 9
-
+        page_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        page_wall = self._wall_lines(image)
+        crops = []
         for bx0, by0, bx1, by1 in self._mask_clusters(mask, pad=3):
             cx0, cy0 = max(0, bx0 - 29), max(0, by0 - 29)
             cx1, cy1 = min(image.shape[1], bx1 + 29), min(image.shape[0], by1 + 29)
@@ -4008,93 +4294,140 @@ class MangaTranslator:
             if (result is not None
                     and self._bg_is_textured(crop_img, crop_msk, strong=True)):
                 result = None
-            if result is None and getattr(self, "use_lama", False) and not lama_loaded:
-                lama_loaded = True
-                lama = self._get_lama()
-            if result is None and lama is not None and _lama_budget > 0:
-                _dense_cpu = (_IS_ANDROID
-                              and float((crop_msk > 0).mean()) > 0.42)
-                if not _dense_cpu:
-                  _lama_budget -= 1
-                  try:
-                    
-                    lx0, ly0 = max(0, bx0 - 128), max(0, by0 - 128)
-                    lx1, ly1 = min(image.shape[1], bx1 + 128), min(image.shape[0], by1 + 128)
-                    lama_img = image[ly0:ly1, lx0:lx1]
-                    
-                    lama_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-                    lama_mask = cv2.dilate(mask[ly0:ly1, lx0:lx1], lama_kernel)
-                    result = cv2.cvtColor(np.array(lama(lama_img, lama_mask)), cv2.COLOR_RGB2BGR)
-                    if result.shape != lama_img.shape:
+            crops.append([cx0, cy0, cx1, cy1, crop_msk, result, method])
+
+        pending = [c for c in crops if c[5] is None]
+        if pending and getattr(self, "use_lama", False):
+            lama = self._get_lama()
+            if lama is not None:
+                try:
+                    page_mask = cv2.dilate(mask, page_kernel)
+                    _wall = self._wall_lines(image)
+                    if _wall is not None:
+                        pm = page_mask > 0
+                        mk = mask > 0
+                        wl = _wall > 0
+                        page_mask = ((pm & mk) | (pm & ~wl)).astype(np.uint8) * 255
+                    t0 = time.time()
+                    page_out = lama(image, page_mask)
+                    dt = time.time() - t0
+                    if isinstance(page_out, np.ndarray):
+                        page_bgr = page_out
+                    else:
+                        page_bgr = np.array(page_out)
+                    if page_bgr.ndim == 2:
+                        page_bgr = cv2.cvtColor(page_bgr, cv2.COLOR_GRAY2BGR)
+                    else:
+                        page_bgr = cv2.cvtColor(page_bgr, cv2.COLOR_RGB2BGR)
+                    if page_bgr.shape[:2] != image.shape[:2]:
                         raise ValueError("LaMa returned an unexpected image shape")
-                    result = result[cy0-ly0:cy1-ly0, cx0-lx0:cx1-lx0]
-                    if result.shape != crop_img.shape:
-                        raise ValueError("LaMa returned an unexpected image shape")
-                    try:
-                        _fm = (cv2.dilate(crop_msk, lama_kernel) > 0)
-                        _ring_m = (cv2.dilate(
-                            crop_msk, cv2.getStructuringElement(
-                                cv2.MORPH_ELLIPSE, (31, 31))) > 0) & (~_fm)
-                        if _fm.any() and _ring_m.any():
-                            _g = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
-                            _bg_px = _g[_ring_m]
-                            _bright = _bg_px[_bg_px >= 160.0]
-                            if _bright.size >= max(50, int(0.02 * _bg_px.size)):
-                                _bg_med = float(np.median(_bright))
-                                _fill_med = float(np.median(_g[_fm]))
-                                if _fill_med < 115.0 and _fill_med < _bg_med - 55.0:
-                                    print(f"  [!] خروجی LaMa لکهٔ تیره گذاشت "
-                                          f"({_fill_med:.0f} در برابر کاغذ {_bg_med:.0f}) "
-                                          f"→ پرکردنِ صاف برای این خوشه")
-                                    result = None
-                    except Exception:
-                        pass
-                    if result is not None:
-                        crop_msk = cv2.dilate(crop_msk, lama_kernel)
-                        method = "LaMa"
-                  except Exception as e:
-                    print(f"  [!] LaMa failed ({e}); using OpenCV for this crop.")
-                    result = None
-            elif (result is None and lama is not None
-                  and _lama_budget <= 0 and not _budget_logged):
-                _budget_logged = True
-                print("  [!] بودجهٔ LaMa این صفحه پر شد → بقیهٔ خوشه‌ها با "
-                      "پرکردنِ سریع/OpenCV ادامه می‌یابد")
+                    print(f"  [*] LaMa کل صفحه یک‌جا: {dt:.1f}s "
+                          f"({len(pending)} خوشه)")
+                    _qc_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
+                    for c in pending:
+                        cx0, cy0, cx1, cy1, crop_msk = c[:5]
+                        result = page_bgr[cy0:cy1, cx0:cx1]
+                        try:
+                            _fm = (cv2.dilate(crop_msk, page_kernel) > 0)
+                            _ring_m = (cv2.dilate(crop_msk, _qc_kernel) > 0) & (~_fm)
+                            if _fm.any() and _ring_m.any():
+                                _g = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+                                _bg_px = _g[_ring_m]
+                                _bright = _bg_px[_bg_px >= 160.0]
+                                if _bright.size >= max(50, int(0.02 * _bg_px.size)):
+                                    _bg_med = float(np.median(_bright))
+                                    _fill_med = float(np.median(_g[_fm]))
+                                    if _fill_med < 115.0 and _fill_med < _bg_med - 55.0:
+                                        print(f"  [!] خروجی LaMa لکهٔ تیره گذاشت "
+                                              f"({_fill_med:.0f} در برابر کاغذ {_bg_med:.0f}) "
+                                              f"→ پرکردنِ صاف/OpenCV برای این خوشه")
+                                        result = None
+                        except Exception:
+                            pass
+                        if result is not None:
+                            c[4] = cv2.dilate(crop_msk, page_kernel)
+                            c[5] = result
+                            c[6] = "LaMa"
+                except Exception as e:
+                    print(f"  [!] LaMa failed ({e}); using OpenCV fallback.")
+            else:
+                print("  [!] LaMa در دسترس نیست → OpenCV برای خوشه‌های باقی‌مانده")
+
+        for cx0, cy0, cx1, cy1, crop_msk, result, method in crops:
             if result is None:
-                if self._bg_is_textured(crop_img, crop_msk):
-                    _refined = self._glyph_refine_mask(crop_img, crop_msk)
+                crop_img = image[cy0:cy1, cx0:cx1]
+                _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                _dil = cv2.morphologyEx(
+                    cv2.dilate(crop_msk, _oc_k, iterations=1),
+                    cv2.MORPH_CLOSE, _oc_k)
+                try:
+                    _thick = float(cv2.distanceTransform(
+                        (_dil > 0).astype(np.uint8), cv2.DIST_L2, 3).max())
+                except Exception:
+                    _thick = 0.0
+                _thin = _thick <= 28.0
+                if _thin and self._bg_is_textured(crop_img, _dil):
+                    _refined = self._glyph_refine_mask(crop_img, _dil)
                     if _refined is not None:
                         _tl = self._opencv_inpaint_hq(crop_img, _refined)
                         if _tl is not None:
                             crop_msk = _refined
                             result = _tl
-                            method = "OpenCV"
                 if result is None:
-                    _sm = self._smooth_bg_fill(crop_img, crop_msk)
+                    _sm = self._smooth_bg_fill(crop_img, _dil)
                     if _sm is not None:
+                        crop_msk = _dil
                         result = _sm
-                        method = "OpenCV"
-                    else:
-                        _refined = self._glyph_refine_mask(crop_img, crop_msk)
+                    elif _thin:
+                        _refined = self._glyph_refine_mask(crop_img, _dil)
                         if _refined is not None:
-                            crop_msk = _refined
-                            _sm2 = self._smooth_bg_fill(crop_img, crop_msk)
+                            _sm2 = self._smooth_bg_fill(crop_img, _refined)
                             if _sm2 is not None:
+                                crop_msk = _refined
                                 result = _sm2
-                                method = "OpenCV"
-                        if result is None:
-                            _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
-                            crop_msk = cv2.dilate(crop_msk, _oc_k, iterations=1)
-                            crop_msk = cv2.morphologyEx(crop_msk, cv2.MORPH_CLOSE, _oc_k)
-                            result = self._opencv_inpaint_hq(crop_img, crop_msk)
-                            method = "OpenCV"
+                    if result is None:
+                        result = self._opencv_fill_components(crop_img,
+                                                              crop_msk,
+                                                              wall=page_wall)
+                method = "OpenCV"
             mm = crop_msk > 0
-
             cleaned[cy0:cy1, cx0:cx1][mm] = result[mm]
             counts[method] += 1
 
         print(f"  - Cleanup: {counts}")
         return cleaned
+
+    def _opencv_fill_components(self, crop_img: np.ndarray, crop_msk: np.ndarray,
+                                wall: Optional[np.ndarray] = None) -> np.ndarray:
+        try:
+            n, lab, st, _ = cv2.connectedComponentsWithStats(
+                (crop_msk > 0).astype(np.uint8), 8)
+        except Exception:
+            return self._opencv_inpaint_hq(crop_img, crop_msk)
+        k9 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+        wall_m = None if wall is None else (wall > 0)
+        out = crop_img.copy()
+        h_c, w_c = crop_img.shape[:2]
+        for i in range(1, n):
+            x, y, w, h, a = (int(v) for v in st[i])
+            if a < 4:
+                continue
+            pad = 24
+            x0, y0 = max(0, x - pad), max(0, y - pad)
+            x1 = min(w_c, x + w + pad)
+            y1 = min(h_c, y + h + pad)
+            sub_img = out[y0:y1, x0:x1]
+            raw_m = (lab[y0:y1, x0:x1] == i)
+            sub_m = cv2.morphologyEx(
+                cv2.dilate(raw_m.astype(np.uint8) * 255, k9, iterations=1),
+                cv2.MORPH_CLOSE, k9)
+            dm = sub_m > 0
+            if wall_m is not None:
+                wl = wall_m[y0:y1, x0:x1]
+                dm = (dm & raw_m) | (dm & ~wl)
+            fill = self._opencv_inpaint_hq(sub_img, dm.astype(np.uint8) * 255)
+            out[y0:y1, x0:x1][dm] = fill[dm]
+        return out
 
     @staticmethod
     def _bg_is_textured(crop_img: np.ndarray, crop_msk: np.ndarray,
@@ -4158,6 +4491,18 @@ class MangaTranslator:
 
         out = cv2.inpaint(image, m, inpaintRadius=radius, flags=cv2.INPAINT_TELEA)
         out[m == 0] = image[m == 0]
+
+        try:
+            h, w = image.shape[:2]
+            if cv2.countNonZero(m) > 0.004 * h * w and max(h, w) > 640:
+                sc = 640.0 / float(max(h, w))
+                sm = cv2.resize(out, None, fx=sc, fy=sc, interpolation=cv2.INTER_AREA)
+                mm = cv2.resize(m, None, fx=sc, fy=sc, interpolation=cv2.INTER_NEAREST)
+                sm = cv2.inpaint(sm, mm, inpaintRadius=3, flags=cv2.INPAINT_TELEA)
+                up = cv2.resize(sm, (w, h), interpolation=cv2.INTER_CUBIC)
+                out[m > 0] = up[m > 0]
+        except Exception:
+            pass
         return out
 
     @staticmethod
@@ -4177,6 +4522,13 @@ class MangaTranslator:
             if k_b >= min(h_c, w_c):
                 k_b = max(3, (min(h_c, w_c) - 1) // 2 * 2 - 1)
             m_d = cv2.dilate(m0, np.ones((2 * feather + 1, 2 * feather + 1), np.uint8))
+            try:
+                dist = cv2.distanceTransform((m0 > 0).astype(np.uint8),
+                                             cv2.DIST_L2, 3)
+                if float(dist.max()) > 16.0:
+                    return None
+            except Exception:
+                pass
             bg = cv2.medianBlur(crop_img, k_a)
             bg = cv2.medianBlur(bg, k_b)
             alpha = cv2.GaussianBlur(m_d, (7, 7), 0).astype(np.float32) / 255.0
@@ -4646,6 +4998,7 @@ class MangaTranslator:
         config = genai_types.GenerateContentConfig(**config_args)
         client = self._thread_client()
         model = self._thread_model()
+        self._pace_before_gemini_call()
 
         def _do():
             response = client.models.generate_content(
@@ -4878,12 +5231,28 @@ class MangaTranslator:
         )
         try:
             print("[فاز ۳ - بریف داستان] زمینه کوتاه از متن‌های موجود...")
-            if self.provider_type == "gemini":
-                raw = self._translate_with_gemini(
-                    prompt, "فقط شواهد صریح متن را برای مترجم خلاصه کن.", structured=False)
-            else:
-                raw = self._translate_with_openai(
-                    prompt, "فقط شواهد صریح متن را برای مترجم خلاصه کن.", structured=False)
+            save_model = self._thread_model()
+            lite = next((m for m in (self._model_cascade or [])
+                         if "lite" in (m or "").lower()), "")
+            try:
+                if lite and lite != save_model:
+                    self._set_thread_model(lite)
+            except Exception:
+                pass
+            try:
+                if self.provider_type == "gemini":
+                    raw = self._translate_with_gemini(
+                        prompt, "فقط شواهد صریح متن را برای مترجم خلاصه کن.",
+                        structured=False)
+                else:
+                    raw = self._translate_with_openai(
+                        prompt, "فقط شواهد صریح متن را برای مترجم خلاصه کن.",
+                        structured=False)
+            finally:
+                try:
+                    self._set_thread_model(save_model)
+                except Exception:
+                    pass
             brief = (raw or "").strip()
             if 20 <= len(brief) <= 1600 and not brief.startswith(("[", "{", "```")):
                 self._chapter_brief = brief
@@ -5042,9 +5411,14 @@ class MangaTranslator:
             example = {"id": work_regions[0].id, "translation": "متن فارسی"}
             if allowed:
                 example["tone"] = allowed[0]
-            payload = {
-                "items": [{"id": r.id, "text": r.source_text} for r in work_regions],
-            }
+            items = []
+            for r in work_regions:
+                it = {"id": r.id, "text": r.source_text}
+                st = (getattr(r, "bubble_style", None) or "").strip()
+                if st and st != "normal":
+                    it["style"] = st
+                items.append(it)
+            payload = {"items": items}
             if len(work_regions) != len(regions):
                 payload["context_only"] = [
                     {"id": r.id, "text": r.source_text} for r in regions
@@ -5053,6 +5427,10 @@ class MangaTranslator:
                 "متن‌های items را به فارسی ترجمه کن؛ ممکن است از چند صفحه باشند. "
                 "ترتیب ورودی را برای بافت بخوان، اما پیوستگی یا گوینده مشترک را فرض نکن. "
                 "context_only اگر هست فقط زمینه به ترتیب اصلی است؛ برای آن خروجی جدا نده.\n"
+                "اگر چند آیتم بخشی از یک گفت‌وگوی پیوسته‌اند، لحن، ضمیر و اسم‌ها را بین "
+                "آن‌ها یکدست نگه دار؛ جواب کوتاه (بله/نه/هوم) را همان‌قدر کوتاه بده. "
+                "style هر آیتم اگر بود (shout/thought/narrator/…) یعنی حباب فریاد، فکر یا "
+                "راوی است — فریاد کوتاه و ضربه‌ای، فکر درونی، راوی شفاهی و روایی.\n"
                 + ((
                     "توجه ژاپنی: OCR ممکن است فوریگانا (کانای ریز تلفظ کنار کانجی) را "
                     "قاطی متن کرده باشد؛ فقط متن اصلی (کانجی + کانای درشت) معنا می‌دهد، "
@@ -5221,9 +5599,30 @@ class MangaTranslator:
                     if self._is_rate_or_model_quota_error(e):
                         print(f"    [!] محدودیت مدل/نرخ روی {self.model_name} "
                               f"(کلید {self._key_index + 1}/{len(self._api_keys)})")
-                        wait_s = min(2.0 + attempt, 6.0)
+                        if self._is_daily_quota_error(e):
+                            self._daily_dead[(self.model_name,
+                                              self._current_api_key())] = True
+                            tried = {k for (m, k) in self._daily_dead
+                                     if m == self.model_name}
+                            if len(tried) < len(self._api_keys) \
+                                    and self._switch_to_next_key(
+                                        reason="سهمیهٔ روزانه", cycle=True):
+                                self._recreate_api_client()
+                                time.sleep(0.3)
+                                continue
+                            if self._drop_current_model_and_switch(
+                                    reason="سهمیهٔ روزانهٔ این مدل"):
+                                continue
+                        _rd = self._mark_key_cooldown(e)
+                        wait_s = (min(max(_rd, 2.0 + attempt), 60.0) if _rd
+                                  else min(2.0 + attempt, 6.0))
                         print(f"    [*] صبر {wait_s:.0f} ثانیه برای بازیابی سهمیه...")
                         time.sleep(wait_s)
+                        if self._switch_to_next_key(reason="rate مدل",
+                                                    cycle=True):
+                            self._recreate_api_client()
+                            time.sleep(0.3)
+                            continue
                         if self._switch_to_next_model(reason="quota/rate مدل"):
                             self._recreate_api_client()
                             time.sleep(0.5)
@@ -5316,14 +5715,31 @@ class MangaTranslator:
                     x in err_str for x in ("rate limit", "429", "quota", "insufficient_quota")
                 ):
                     print(f"    [!] محدودیت نرخ/سهمیه ({self.provider}/{self.model_name})...")
-                    wait_s = min(3.0 + attempt, 8.0)
+                    if self._is_daily_quota_error(e):
+                        self._daily_dead[(self.model_name,
+                                          self._current_api_key())] = True
+                        tried = {k for (m, k) in self._daily_dead
+                                 if m == self.model_name}
+                        if len(tried) < len(self._api_keys) \
+                                and self._switch_to_next_key(
+                                    reason="سهمیهٔ روزانه", cycle=True):
+                            self._recreate_api_client()
+                            time.sleep(0.3)
+                            continue
+                        if self._drop_current_model_and_switch(
+                                reason="سهمیهٔ روزانهٔ این مدل"):
+                            continue
+                    _rd = self._mark_key_cooldown(e)
+                    wait_s = (min(max(_rd, 3.0 + attempt), 60.0) if _rd
+                              else min(3.0 + attempt, 8.0))
                     print(f"    [*] صبر {wait_s:.0f} ثانیه برای بازیابی سهمیه...")
                     time.sleep(wait_s)
-                    if self._switch_to_next_model(reason="rate/quota"):
+                    if self._switch_to_next_key(reason="rate/quota", cycle=True):
+                        self._recreate_api_client()
                         time.sleep(0.5)
                         continue
-                    if self._switch_to_next_key(reason="rate/quota", cycle=True):
-                        time.sleep(1.5)
+                    if self._switch_to_next_model(reason="rate/quota"):
+                        time.sleep(0.5)
                         continue
                 if self._is_banned_or_invalid_key_error(e) or any(
                     x in err_str for x in ("invalid api key", "authentication", "incorrect api key")
@@ -8612,6 +9028,26 @@ html, body { background: #0a0a0b; }
 
     def _render_one_region(self, pil_img, draw, image, original_image, region) -> None:
         x, y, w, h = region.rect
+        try:
+            _polys = [np.asarray(p, dtype=np.float32).reshape(-1, 2)
+                      for p in (getattr(region, "ocr_polys", None) or [])
+                      if np.asarray(p).size >= 6]
+            if _polys:
+                _pts = np.concatenate(_polys, axis=0)
+                px0, py0 = float(_pts[:, 0].min()), float(_pts[:, 1].min())
+                px1, py1 = float(_pts[:, 0].max()), float(_pts[:, 1].max())
+                if (px1 - px0) >= 10 and (py1 - py0) >= 8:
+                    _off = max(abs((px0 + px1) / 2 - (x + w / 2)) / max(1.0, w),
+                               abs((py0 + py1) / 2 - (y + h / 2)) / max(1.0, h))
+                    if _off > 0.35:
+                        _padx = max(6, int(0.06 * (px1 - px0)))
+                        _pady = max(5, int(0.08 * (py1 - py0)))
+                        x = max(0, int(px0 - _padx))
+                        y = max(0, int(py0 - _pady))
+                        w = int(px1 - px0 + 2 * _padx)
+                        h = int(py1 - py0 + 2 * _pady)
+        except Exception:
+            pass
 
 
         short = len((region.translated_text or "").split()) <= 2
@@ -8631,6 +9067,23 @@ html, body { background: #0a0a0b; }
         
         
         max_font = self._max_font_for_region(region)
+
+        try:
+            _hs = []
+            for _p in (getattr(region, "ocr_polys", None) or []):
+                _pts = np.asarray(_p, dtype=np.float32).reshape(-1, 2)
+                if _pts.shape[0] < 3:
+                    continue
+                _r = cv2.minAreaRect(_pts)
+                _hs.append(float(min(_r[1][0], _r[1][1])))
+            if _hs:
+                _orig_h = float(np.median(_hs))
+                if _orig_h >= 9.0:
+                    max_font = max(10, min(int(max_font),
+                                           int(round(_orig_h * 0.80))))
+        except Exception:
+            pass
+
         font, lines, sw = self._wrap_and_fit(
             draw, region.translated_text, box_w, box_h, style=style, max_size=max_font
         )
@@ -8642,6 +9095,20 @@ html, body { background: #0a0a0b; }
             angle = 0.0
         if angle != angle or angle in (float("inf"), float("-inf")):
             angle = 0.0
+
+        try:
+            _angs = []
+            for _p in (getattr(region, "ocr_polys", None) or []):
+                _a = self._poly_long_side_angle(_p)
+                if abs(_a) >= 1.0:
+                    _angs.append(float(_a))
+            if len(_angs) >= 2:
+                _med = float(np.median(_angs))
+                _spread = float(np.max(np.abs(np.asarray(_angs) - _med)))
+                if _spread <= 4.0:
+                    angle = _med
+        except Exception:
+            pass
 
         if abs(angle) < 8:
             bb = font.getbbox("آیگچ", stroke_width=sw)
@@ -8685,7 +9152,7 @@ html, body { background: #0a0a0b; }
                 w_s = (w * c_ - h * s_) / denom
                 h_s = (h * c_ - w * s_) / denom
                 if 24 < w_s <= (w + h) * 0.95 and 10 < h_s <= (w + h) * 0.95:
-                    fit_w, fit_h = int(w_s), int(h_s)
+                    fit_w, fit_h = int(w_s * 0.94), int(h_s * 0.94)
             font, lines, sw = self._wrap_and_fit(
                 draw, region.translated_text, fit_w, fit_h, style=style, max_size=max_font
             )
@@ -8718,8 +9185,9 @@ html, body { background: #0a0a0b; }
 
             rotated = tmp.rotate(-angle, expand=True, resample=Image.BICUBIC)
 
-            max_rw = max(24, int(w * 1.45))
-            max_rh = max(24, int(h * 1.45))
+
+            max_rw = max(24, int(w * 1.04))
+            max_rh = max(24, int(h * 1.04))
             rw0, rh0 = rotated.size
             scale_fit = min(1.0, max_rw / max(1, rw0), max_rh / max(1, rh0))
             if scale_fit < 0.99:
@@ -8786,7 +9254,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--cpu", dest="gpu", action="store_false",
                    help="اجبار به CPU (OpenCV inpaint)")
     p.add_argument("--lama", action="store_true", default=False,
-                   help="حتی روی CPU هم LaMa ONNX را فعال کن (کندتر، تمیزتر)")
+                   help="حتی روی CPU هم پاک‌سازی big-lama.pt را فعال کن (کندتر، تمیزتر)")
     p.add_argument("--no-resume", action="store_true")
     p.add_argument("--keep-old", action="store_true")
     p.add_argument("--request-delay", type=float, default=0.0)
@@ -8917,6 +9385,7 @@ def main():
         font_path=args.font,
         reading_order=args.reading_order,
         gpu=args.gpu,
+        force_lama=bool(getattr(args, "lama", False)),
         max_retries=args.max_retries,
         det_confidence=getattr(args, "det_confidence", 0.28),
         request_delay=args.request_delay,
