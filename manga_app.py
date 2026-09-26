@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 APP_NAME = "مانگا مترجم"
-APP_VER = "1.9"
+APP_VER = "1.10"
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGA_PY = os.path.join(HERE, "manga.py")
 WORK_DIR = os.path.join(HERE, "workspace")
@@ -30,7 +30,7 @@ KEY_ENV_ORDER = ("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY",
                  "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY",
                  "XAI_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "API_KEY")
 PROVIDER_ALIASES = {"chatgpt": "openai", "grok": "xai"}
-PROVIDERS = ["gemini", "gemini-openai", "openai", "deepseek", "groq",
+PROVIDERS = ["gemini", "openai", "deepseek", "groq",
              "xai", "together", "openrouter", "ollama", "custom"]
 
 DEFAULT_GEMINI_KEYS = []#",".join(["123:])

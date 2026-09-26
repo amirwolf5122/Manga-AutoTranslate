@@ -287,6 +287,9 @@ def manifest():
             if f.get("choices_from") == "PROVIDERS" or f.get("id") == "provider":
                 f["choices"] = [[p, p] for p in provs]
                 f.pop("choices_from", None)
+            if f.get("id") in ("manga_api_base", "api_base"):
+                f["visible_if"] = {"field": "provider", "equals": "custom"}
+                f["label"] = "دامنهٔ API سفارشی (فقط برای custom — مثال: https://api.example.com/v1)"
     try:
         _defaults(mf)
     except Exception:
@@ -351,6 +354,23 @@ def _resolve_tones(job, mf):
     return font_by_style, active
 
 
+def _out_stem_from_src(src: str) -> str:
+    s = str(src or "").strip()
+    if not s:
+        return ""
+    try:
+        if s.lower().startswith(("http://", "https://")):
+            from urllib.parse import urlparse, unquote
+            name = os.path.basename(unquote(urlparse(s).path))
+        else:
+            name = os.path.basename(s.replace("\\", "/"))
+        stem = os.path.splitext(name)[0].strip()
+    except Exception:
+        stem = ""
+    stem = re.sub(r'[\\/:*?"<>|]+', "_", stem).strip(" ._")
+    return stem[:80]
+
+
 def start_job(params_json, files_dir):
     with STATE["lock"]:
         if STATE["job"] and not STATE["job"].get("done"):
@@ -359,9 +379,10 @@ def start_job(params_json, files_dir):
         work = os.path.join(files_dir, "work")
         os.makedirs(work, exist_ok=True)
         out = os.path.join(work, "out")
-        out_file = os.path.join(out, "output." + str(p.get("fmt", "PDF")).lower())
-        if str(p.get("fmt", "PDF")).upper() == "PDF":
-            out_file = os.path.join(out, "output.pdf")
+        fmt = str(p.get("fmt", "PDF")).upper()
+        ext = "pdf" if fmt == "PDF" else fmt.lower()
+        _stem = _out_stem_from_src(p.get("src") or p.get("url") or "")
+        out_file = os.path.join(out, (_stem or "manga") + "." + ext)
         job = {
             "done": False, "log": "⏳ آماده‌سازی…", "error": None,
             "out_file": None, "images": [], "debug_images": [],

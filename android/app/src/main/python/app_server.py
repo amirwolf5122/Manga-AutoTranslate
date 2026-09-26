@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 
 try:
-    from manga_app import (  # noqa: F401
+    from manga_app import (
         APP_NAME, APP_VER, PROVIDERS, WEB_CSS,
     )
 except Exception:
@@ -67,8 +67,12 @@ PAGE = """<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <div class="stepcard">
  <div class="steptitle"><span class="stepnum">۲</span> مترجم هوش مصنوعی</div>
  <div style="display:flex;gap:8px;flex-wrap:wrap">
-  <select id="provider" style="flex:1;background:#08080a;color:#e8e6e1;border:1px solid #1f1f24;border-radius:10px;padding:12px">%(providers)s</select>
+  <select id="provider" onchange="syncCustom()" style="flex:1;background:#08080a;color:#e8e6e1;border:1px solid #1f1f24;border-radius:10px;padding:12px">%(providers)s</select>
   <input id="keys" type="password" placeholder="کلیدهای API (با کاما)" style="flex:2;background:#08080a;color:#e8e6e1;border:1px solid #1f1f24;border-radius:10px;padding:12px">
+ </div>
+ <div id="customBox" style="display:none;margin-top:8px">
+  <input id="api_base" type="url" placeholder="دامنهٔ API سفارشی — مثال: https://api.example.com/v1" style="width:100%%;background:#08080a;color:#e8e6e1;border:1px solid #1f1f24;border-radius:10px;padding:12px">
+  <input id="cmodel" type="text" placeholder="نام مدل (برای custom اجباری) — مثال: gpt-4o-mini" style="width:100%%;margin-top:8px;background:#08080a;color:#e8e6e1;border:1px solid #1f1f24;border-radius:10px;padding:12px">
  </div>
  <div style="margin-top:10px;font-size:.85rem;color:#97948c">زبان متن مانگا (OCR):</div>
  <div id="langs" style="display:flex;flex-wrap:wrap">%(langs)s</div>
@@ -94,6 +98,11 @@ PAGE = """<!DOCTYPE html><html lang="fa" dir="rtl"><head><meta charset="utf-8">
 <div class="credit"><a href="https://github.com/amirwolf5122/Manga-AutoTranslate">سورس — amirwolf5122</a></div>
 
 <script>
+function syncCustom(){
+  const p=document.getElementById('provider').value;
+  document.getElementById('customBox').style.display=(p==='custom')?'block':'none';
+}
+syncCustom();
 async function start(){
   const run=document.getElementById('run'); run.disabled=true; run.textContent='⏳ در حال ارسال…';
   const fd=new FormData();
@@ -102,6 +111,8 @@ async function start(){
   fd.append('url', document.getElementById('url').value);
   fd.append('provider', document.getElementById('provider').value);
   fd.append('keys', document.getElementById('keys').value);
+  fd.append('api_base', document.getElementById('api_base').value);
+  fd.append('model', document.getElementById('cmodel').value);
   const lang=document.querySelector('input[name=ocr_lang]:checked');
   fd.append('ocr_lang', lang? lang.value : 'en');
   fd.append('fmt', document.getElementById('fmt').value);
@@ -180,6 +191,8 @@ def _run_job(sid, cfg):
             tr = manga.MangaTranslator(
                 input_path=cfg["src"], output_dir=cfg["out"],
                 provider=cfg["provider"], api_key=cfg["keys"],
+                model_name=cfg["model"] or None,
+                api_base=cfg["api_base"] or None,
                 font_path=manga.find_font() or "Vazirmatn-Bold.ttf",
                 ocr_langs=cfg["langs"], debug=cfg["debug"], gpu=False,
                 fake_translate=cfg["fake"], no_resume=True,
@@ -266,10 +279,22 @@ class Handler(BaseHTTPRequestHandler):
             "out": os.path.join(os.environ.get("MANGA_FILES_DIR", os.getcwd()), "work", "out", sid),
             "provider": fields.get("provider", "gemini"),
             "keys": ",".join(k for k in (fields.get("keys") or "").split(",") if k.strip()),
+            "model": str(fields.get("model") or "").strip(),
+            "api_base": manga.normalize_api_base(str(fields.get("api_base") or "")),
             "langs": [x for x in (fields.get("ocr_lang") or "en").split()],
             "debug": fields.get("debug") == "true",
             "fake": fields.get("fake") == "true",
         }
+        if str(cfg["provider"]).strip() == "custom":
+            if not cfg["api_base"]:
+                return self._send(400, json.dumps({"error":
+                    "برای provider «custom» دامنهٔ API لازم است — "
+                    "مثال: https://api.example.com/v1"}, ensure_ascii=False).encode(),
+                    "application/json")
+            if not cfg["model"]:
+                return self._send(400, json.dumps({"error":
+                    "برای provider «custom» نام مدل لازم است — مثال: gpt-4o-mini"},
+                    ensure_ascii=False).encode(), "application/json")
         with LOCK:
             job = JOBS[sid] = {"done": False, "log_txt": "در صف…", "images": [],
                                "debug_images": [], "download": None}

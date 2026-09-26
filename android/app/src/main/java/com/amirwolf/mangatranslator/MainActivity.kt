@@ -103,6 +103,13 @@ class MainActivity : AppCompatActivity() {
     private fun saveVal(id: String, v: Any?) {
         values[id] = v
         prefs.edit().putString(id, v?.toString() ?: "").apply()
+        notifyDeps(id)
+    }
+
+    private val depListeners = HashMap<String, MutableList<() -> Unit>>()
+
+    private fun notifyDeps(id: String) {
+        depListeners[id]?.forEach { try { it() } catch (_: Exception) {} }
     }
 
     private fun savedOr(id: String, dflt: Any?): Any? =
@@ -560,10 +567,27 @@ class MainActivity : AppCompatActivity() {
             setPadding(dp(2), dp(3), dp(2), dp(4))
         } else null
 
+        val row = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        card.addView(row)
+        if (lbl.isNotEmpty() && type != "bool") row.addView(label(lbl))
+        val visIf = f.optJSONObject("visible_if")
+        if (visIf != null) {
+            val depId = visIf.optString("field")
+            val depVal = visIf.optString("equals")
+            fun applyVis() {
+                val cur = (values[depId] ?: prefs.getString(depId, null))?.toString() ?: ""
+                row.visibility =
+                    if (cur.equals(depVal, ignoreCase = true)) View.VISIBLE else View.GONE
+            }
+            applyVis()
+            if (depId.isNotBlank()) {
+                depListeners.getOrPut(depId) { mutableListOf() }.add { applyVis() }
+            }
+        }
+
         when (type) {
             "text", "password", "number" -> {
-                card.addView(label(lbl))
-                val lines = f.optInt("lines", 1)
+                                val lines = f.optInt("lines", 1)
                 val et = EditText(this).apply {
                     if (lines > 1) {
                         setSingleLine(false)
@@ -595,13 +619,12 @@ class MainActivity : AppCompatActivity() {
                         override fun onTextChanged(p0: CharSequence?, p1: Int, p2: Int, p3: Int) {}
                     })
                 }
-                card.addView(et)
-                infoView()?.let { card.addView(it) }
+                row.addView(et)
+                infoView()?.let { row.addView(it) }
                 fieldViews[id] = et
             }
             "select" -> {
-                card.addView(label(lbl))
-                val items = ArrayList<Pair<String, String>>()
+                                val items = ArrayList<Pair<String, String>>()
                 f.optJSONArray("choices")?.let { ch ->
                     for (i in 0 until ch.length()) {
                         val c = ch.optJSONArray(i)
@@ -629,13 +652,12 @@ class MainActivity : AppCompatActivity() {
                         }.show()
                 }
                 if (selected >= 0) values[id] = items[selected].second
-                card.addView(btn)
-                infoView()?.let { card.addView(it) }
+                row.addView(btn)
+                infoView()?.let { row.addView(it) }
                 fieldViews[id] = btn
             }
             "radio" -> {
-                card.addView(label(lbl))
-                val choices = f.optJSONArray("choices")!!
+                                val choices = f.optJSONArray("choices")!!
                 val saved = savedOr(id, dflt)?.toString()
                 val items = ArrayList<Triple<String, String, RadioButton>>()
                 for (i in 0 until choices.length()) {
@@ -713,8 +735,8 @@ class MainActivity : AppCompatActivity() {
                     else if (items.isNotEmpty()) saveVal(id, items[0].second)
                 }
                 syncRows()
-                card.addView(listCol)
-                infoView()?.let { card.addView(it) }
+                row.addView(listCol)
+                infoView()?.let { row.addView(it) }
                 fieldViews[id] = listCol
             }
             "bool" -> {
@@ -729,8 +751,8 @@ class MainActivity : AppCompatActivity() {
                         intArrayOf(ACC, LINE))
                     setOnCheckedChangeListener { _, c -> saveVal(id, c) }
                 }
-                card.addView(sw)
-                infoView()?.let { card.addView(it) }
+                row.addView(sw)
+                infoView()?.let { row.addView(it) }
                 fieldViews[id] = sw
             }
             "slider" -> {
@@ -765,7 +787,7 @@ class MainActivity : AppCompatActivity() {
                     setPadding(dp(10), dp(4), dp(10), dp(4))
                 }
                 row.addView(valBox)
-                card.addView(row)
+                row.addView(row)
                 val sl = Slider(this).apply {
                     valueFrom = minV.toFloat()
                     valueTo = maxV.toFloat()
@@ -777,13 +799,12 @@ class MainActivity : AppCompatActivity() {
                         if (fromUser) saveVal(id, if (isFloat) vv.toDouble() else vv.toInt())
                     }
                 }
-                card.addView(sl)
-                infoView()?.let { card.addView(it) }
+                row.addView(sl)
+                infoView()?.let { row.addView(it) }
                 fieldViews[id] = sl
             }
             "file" -> {
-                card.addView(label(lbl))
-                val nameView = TextView(this).apply {
+                                val nameView = TextView(this).apply {
                     text = "فایلی انتخاب نشده"
                     setTextColor(MUT); textSize = 11f; setPadding(dp(12), dp(2), dp(12), dp(2))
                 }
@@ -803,8 +824,8 @@ class MainActivity : AppCompatActivity() {
                             setType("*/*")
                         }, "انتخاب فایل"), REQ_FILE)
                 }
-                card.addView(btn)
-                card.addView(nameView)
+                row.addView(btn)
+                row.addView(nameView)
                 fieldViews[id] = nameView
                 fieldViews[id + "_btn"] = btn
                 val prev = prefs.getString(id + "_path", null)
@@ -814,7 +835,7 @@ class MainActivity : AppCompatActivity() {
                     (fieldViews[id + "_btn"] as? Button)?.text = "✓ ${File(prev).name}"
                 }
             }
-            "header" -> card.addView(TextView(this).apply {
+            "header" -> row.addView(TextView(this).apply {
                 text = lbl; setTextColor(ACC); textSize = 12.5f
                 typeface = Typeface.DEFAULT_BOLD; setPadding(0, dp(10), 0, dp(2))
             })
@@ -843,6 +864,7 @@ class MainActivity : AppCompatActivity() {
         map.put("provider", firstNonEmpty(o, "provider") ?: "gemini")
         map.put("keys", firstNonEmpty(o, "manga_api_keys", "api_keys", "keys") ?: "")
         map.put("model", firstNonEmpty(o, "manga_model", "model") ?: "")
+        map.put("api_base", firstNonEmpty(o, "manga_api_base", "api_base") ?: "")
         map.put("ocr_lang", firstNonEmpty(o, "manga_ocr_lang", "ocr_lang") ?: "en")
         map.put("fmt", firstNonEmpty(o, "out_fmt", "fmt") ?: "PDF")
         map.put("quality", optInt(o, "quality", 92))
@@ -1220,7 +1242,9 @@ class MainActivity : AppCompatActivity() {
         val f = File(path)
         val ext = f.extension.ifBlank { "bin" }
         Thread {
-            val ok = saveAnyToDownloads(path, null, "manga_${stampNow()}.$ext")
+            val nice = if (f.nameWithoutExtension.isBlank() ||
+                        f.name.startsWith("output.")) "manga_${stampNow()}.$ext" else null
+            val ok = saveAnyToDownloads(path, null, nice)
             ui.post {
                 Toast.makeText(this,
                     if (ok) "✔ ذخیره شد: Download/manga" else "❌ ذخیره نشد: ${f.name}",
@@ -1264,8 +1288,10 @@ class MainActivity : AppCompatActivity() {
                 var n = 0
                 val f = File(outFile)
                 if (f.isFile) {
-                    if (saveAnyToDownloads(outFile, null,
-                            "manga_${stampNow()}." + f.extension.ifBlank { "bin" })) n++
+                    val nice = if (f.nameWithoutExtension.isBlank() ||
+                                f.name.startsWith("output."))
+                        "manga_${stampNow()}." + f.extension.ifBlank { "bin" } else null
+                    if (saveAnyToDownloads(outFile, null, nice)) n++
                 }
                 val sub = "pages_${stampNow()}"
                 for (p in images) if (saveAnyToDownloads(p, sub, null)) n++

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-APP_VER = "1.9"
+APP_VER = "1.10"
 
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو مترجم مانگا و مانهوا به فارسی گفتاری ایرانی هستی. کار تو دوبله است، نه ترجمه لغت‌به‌لغت.
@@ -1586,10 +1586,28 @@ class MlKitBackend:
         lines = []
         for item in lines_j:
             try:
-                parts = str(item).split("|", 2)
+                parts = str(item).split("|", 3)
                 if len(parts) < 3:
                     continue
-                score_s, box_s, text = parts
+                def _is_f(s):
+                    try:
+                        float(s)
+                        return True
+                    except (TypeError, ValueError):
+                        return False
+                def _is_box(s):
+                    try:
+                        vs = [float(v) for v in str(s).split(",")]
+                        return len(vs) >= 6 and all(np.isfinite(vs))
+                    except Exception:
+                        return False
+                if (len(parts) == 4 and _is_f(parts[0]) and _is_f(parts[1])
+                        and _is_box(parts[2])):
+                    ang = float(parts[0])
+                    score_s, box_s, text = parts[1], parts[2], parts[3]
+                else:
+                    ang = 0.0
+                    score_s, box_s, text = parts[0], parts[1], parts[2]
                 score = float(score_s) if score_s else 1.0
                 nums = [float(v) for v in box_s.split(",")]
                 if len(nums) < 8 or not text.strip():
@@ -1597,7 +1615,7 @@ class MlKitBackend:
                 box = np.asarray(nums[:8], dtype=np.float32).reshape(4, 2)
                 text = self._clean(text, latin=(self.lang == "latin"))
                 if text:
-                    lines.append([box, (text, score)])
+                    lines.append([box, (text, score, float(ang))])
             except Exception:
                 continue
         return [lines] if lines else None
@@ -4492,7 +4510,13 @@ class MangaTranslator:
         for cx0, cy0, cx1, cy1, crop_msk, result, method in crops:
             if result is None:
                 crop_img = image[cy0:cy1, cx0:cx1]
-                _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                try:
+                    _thick0 = float(cv2.distanceTransform(
+                        (crop_msk > 0).astype(np.uint8), cv2.DIST_L2, 3).max())
+                except Exception:
+                    _thick0 = 0.0
+                _kd = int(np.clip(2 * int(round(max(4.0, _thick0 * 0.9))) + 1, 9, 41))
+                _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_kd, _kd))
                 _dil = cv2.morphologyEx(
                     cv2.dilate(crop_msk, _oc_k, iterations=1),
                     cv2.MORPH_CLOSE, _oc_k)
@@ -4500,9 +4524,9 @@ class MangaTranslator:
                     _thick = float(cv2.distanceTransform(
                         (_dil > 0).astype(np.uint8), cv2.DIST_L2, 3).max())
                 except Exception:
-                    _thick = 0.0
+                    _thick = _thick0
                 _thin = _thick <= 28.0
-                if _thin and self._bg_is_textured(crop_img, _dil):
+                if self._bg_is_textured(crop_img, _dil):
                     _refined = self._glyph_refine_mask(crop_img, _dil)
                     if _refined is not None:
                         _tl = self._opencv_inpaint_hq(crop_img, _refined)
@@ -4526,6 +4550,14 @@ class MangaTranslator:
                                                               crop_msk,
                                                               wall=page_wall)
                 method = "OpenCV"
+                try:
+                    result = self._scrub_dark_residuals(result, crop_msk)
+                except Exception:
+                    pass
+                try:
+                    result = self._scrub_bright_residuals(result, crop_msk)
+                except Exception:
+                    pass
             mm = crop_msk > 0
             cleaned[cy0:cy1, cx0:cx1][mm] = result[mm]
             counts[method] += 1
@@ -4661,8 +4693,16 @@ class MangaTranslator:
             try:
                 dist = cv2.distanceTransform((m0 > 0).astype(np.uint8),
                                              cv2.DIST_L2, 3)
-                if float(dist.max()) > 16.0:
-                    return None
+                dmax = float(dist.max())
+                if dmax > 16.0:
+                    ring = (cv2.dilate(m0, np.ones((15, 15), np.uint8)) > 0) & ~(m0 > 0)
+                    soft = False
+                    if int(np.count_nonzero(ring)) >= 200:
+                        g = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY).astype(np.float32)
+                        lap = cv2.Laplacian(g, cv2.CV_32F)
+                        soft = float(lap[ring].std()) < 9.0
+                    if not soft:
+                        return None
             except Exception:
                 pass
             bg = cv2.medianBlur(crop_img, k_a)
@@ -6498,7 +6538,8 @@ class MangaTranslator:
                 crop0 = image_bgr[y1:y2, x1:x2]
                 ch0, cw0 = crop0.shape[:2]
 
-        def _run(crop_bgr, scale: float, apply_offset: bool = True):
+        def _run(crop_bgr, scale: float, apply_offset: bool = True,
+                 ang_corr: float = 0.0):
             if scale > 1.01:
                 crop_bgr = cv2.resize(
                     crop_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC
@@ -6515,9 +6556,15 @@ class MangaTranslator:
                     if not (isinstance(line, (list, tuple)) and len(line) >= 2):
                         continue
                     pair = line[1]
+                    eng_ang = 0.0
                     if isinstance(pair, (list, tuple)):
                         text = str(pair[0]).strip()
                         conf = float(pair[1]) if len(pair) > 1 else 1.0
+                        if len(pair) > 2:
+                            try:
+                                eng_ang = float(pair[2])
+                            except (TypeError, ValueError):
+                                eng_ang = 0.0
                     else:
                         text, conf = str(pair).strip(), 1.0
                     if not text or conf < self.min_confidence:
@@ -6540,7 +6587,8 @@ class MangaTranslator:
                                 poly = poly + np.array([x1, y1], dtype=np.float32)
                             polys.append(poly.astype(np.int32))
                             entry_poly = poly.astype(np.float32)
-                    entries.append((text, conf, entry_poly))
+                    entries.append((text, conf, entry_poly,
+                                    float(eng_ang) + float(ang_corr)))
                 except Exception:
                     continue
             joined = " ".join(lines).strip()
@@ -6620,7 +6668,7 @@ class MangaTranslator:
             return inter / min(aa, ab)
 
         merged: List[List] = []  
-        best = ("", [], -1.0)
+        best = ("", [], -1.0, [])
         inset_used = inset if core is not crop0 else 0
         early_stop = False
         for name, crop_v, sc in variants:
@@ -6631,7 +6679,11 @@ class MangaTranslator:
                     if e[2] is not None:
                         e[2][:, 0] += inset_used
                         e[2][:, 1] += inset_used
-            for text, e_conf, e_poly in entries:
+            _poly_angs = [float(e[3]) if len(e) > 3 else 0.0
+                          for e in entries if e[2] is not None]
+            for e in entries:
+                text, e_conf, e_poly = e[0], e[1], e[2]
+                e_ang = float(e[3]) if len(e) > 3 else 0.0
                 bb = _bb_of(e_poly)
                 hit = None
                 if bb is not None:
@@ -6641,13 +6693,13 @@ class MangaTranslator:
                             hit = m_item
                             break
                 if hit is None:
-                    merged.append([text, e_conf, e_poly])
+                    merged.append([text, e_conf, e_poly, e_ang])
                 elif e_conf > hit[1]:
-                    hit[0], hit[1] = text, e_conf
+                    hit[0], hit[1], hit[3] = text, e_conf, e_ang
             
             scv = _score(txt, conf)
             if scv > best[2]:
-                best = (txt, polys, scv)
+                best = (txt, polys, scv, _poly_angs)
 
             if ((not _tilted0) and conf >= 0.86
                     and len(re.sub(r"[^A-Za-z]", "", txt or "")) >= 8):
@@ -6691,9 +6743,11 @@ class MangaTranslator:
                 np.rint(np.asarray(m_item[2], dtype=np.float32)).astype(np.int32)
                 for m_item in merged if m_item[2] is not None
             ]
+            u_angs = [float(m_item[3]) if len(m_item) > 3 else 0.0
+                      for m_item in merged if m_item[2] is not None]
             scv = _score(u_txt, u_conf)
             if scv >= best[2]:
-                best = (u_txt, u_polys, scv)
+                best = (u_txt, u_polys, scv, u_angs)
 
         
         
@@ -6721,7 +6775,9 @@ class MangaTranslator:
                     borderMode=cv2.BORDER_CONSTANT,
                     borderValue=(255, 255, 255),
                 )
-                txt, polys, conf, _entries = _run(desk, base_scale, apply_offset=False)
+                txt, polys, conf, _entries = _run(desk, base_scale,
+                                                  apply_offset=False,
+                                                  ang_corr=float(skew))
                 if txt and polys:
                     M_inv = cv2.getRotationMatrix2D((wc / 2.0, hc / 2.0), -skew, 1.0)
                     M_inv[0, 2] += wc / 2.0 - nw / 2.0
@@ -6740,11 +6796,13 @@ class MangaTranslator:
                     scv = _score(txt, conf)
                     latin_d = len(re.sub(r"[^A-Za-z]", "", txt or ""))
                     if scv > best[2] and latin_d >= latin_n:
-                        best = (txt, back_polys, scv)
+                        _desk_angs = [float(e[3]) if len(e) > 3 else 0.0
+                                      for e in _entries if e[2] is not None]
+                        best = (txt, back_polys, scv, _desk_angs)
             except Exception:
                 pass
 
-        return best[0], best[1]
+        return best[0], best[1], (best[3] if len(best) > 3 else [])
 
 
     @staticmethod
@@ -7051,7 +7109,8 @@ class MangaTranslator:
             if bw * bh < page_area * 0.0008 and max(bw, bh) < 60:
                 continue
             cand.append((i, b, x1, y1, x2, y2, bw, bh))
-        ocr_results: List[Tuple[str, List[np.ndarray]]] = [("", [])] * len(cand)
+        ocr_results: List[Tuple[str, List[np.ndarray], List[float]]] = [
+            ("", [], [])] * len(cand)
         if cand:
             n_workers = max(1, min(int(getattr(self, "max_workers", 3) or 1), len(cand)))
             if n_workers > 1 and isinstance(self.ocr, RapidOCRBackend):
@@ -7065,7 +7124,8 @@ class MangaTranslator:
                     self._ocr_crop(image, [t[2], t[3], t[4], t[5]]) for t in cand
                 ]
 
-        for (i, b, x1, y1, x2, y2, bw, bh), (text, line_polys) in zip(cand, ocr_results):
+        for (i, b, x1, y1, x2, y2, bw, bh), (text, line_polys, line_angs) in zip(
+                cand, ocr_results):
             if not text:
                 continue
 
@@ -7093,29 +7153,42 @@ class MangaTranslator:
                     if len(latin) >= 3 and any(c in "AEIOUaeiou" for c in latin):
                         kind = "dialogue"
             poly = np.array([[x1, y1], [x2, y1], [x2, y2], [x1, y2]], dtype=np.int32)
-            ang_ = self._estimate_angle_from_polys(line_polys)
-            if abs(ang_) < 3.0:
+            eng_angs = []
+            for _a in (line_angs or []):
                 try:
-                    _tx1 = _ty1 = None
-                    if line_polys:
-                        try:
-                            _pts_all = np.concatenate(
-                                [np.asarray(p).reshape(-1, 2) for p in line_polys])
-                            _tx1, _ty1 = float(_pts_all[:, 0].min()), float(_pts_all[:, 1].min())
-                            _tx2, _ty2 = float(_pts_all[:, 0].max()), float(_pts_all[:, 1].max())
-                        except Exception:
-                            _tx1 = _ty1 = None
-                    if _tx1 is None:
-                        _tx1, _ty1, _tx2, _ty2 = float(x1), float(y1), float(x2), float(y2)
-                    _iy1, _iy2 = max(0, int(_ty1)), min(image.shape[0], int(_ty2) + 1)
-                    _ix1, _ix2 = max(0, int(_tx1)), min(image.shape[1], int(_tx2) + 1)
-                    if _ix2 - _ix1 >= 40 and _iy2 - _iy1 >= 14:
-                        a_ink2 = MangaTranslator._ink_slant_angle(
-                            image[_iy1:_iy2, _ix1:_ix2])
-                        if abs(a_ink2) >= 6.0:
-                            ang_ = a_ink2
-                except Exception:
-                    pass
+                    _af = float(_a)
+                except (TypeError, ValueError):
+                    continue
+                if abs(_af) >= 1.0:
+                    eng_angs.append(_af)
+            ang_src = "ink"
+            if eng_angs:
+                ang_ = float(np.median(eng_angs))
+                ang_src = "engine"
+            else:
+                ang_ = self._estimate_angle_from_polys(line_polys)
+                if abs(ang_) < 3.0:
+                    try:
+                        _tx1 = _ty1 = None
+                        if line_polys:
+                            try:
+                                _pts_all = np.concatenate(
+                                    [np.asarray(p).reshape(-1, 2) for p in line_polys])
+                                _tx1, _ty1 = float(_pts_all[:, 0].min()), float(_pts_all[:, 1].min())
+                                _tx2, _ty2 = float(_pts_all[:, 0].max()), float(_pts_all[:, 1].max())
+                            except Exception:
+                                _tx1 = _ty1 = None
+                        if _tx1 is None:
+                            _tx1, _ty1, _tx2, _ty2 = float(x1), float(y1), float(x2), float(y2)
+                        _iy1, _iy2 = max(0, int(_ty1)), min(image.shape[0], int(_ty2) + 1)
+                        _ix1, _ix2 = max(0, int(_tx1)), min(image.shape[1], int(_tx2) + 1)
+                        if _ix2 - _ix1 >= 40 and _iy2 - _iy1 >= 14:
+                            a_ink2 = MangaTranslator._ink_slant_angle(
+                                image[_iy1:_iy2, _ix1:_ix2])
+                            if abs(a_ink2) >= 6.0:
+                                ang_ = a_ink2
+                    except Exception:
+                        pass
             rx1, ry1, rw_, rh_ = x1, y1, bw, bh
             if line_polys and abs(ang_) >= 8.0:
                 try:
@@ -7137,6 +7210,7 @@ class MangaTranslator:
                 ocr_polys=line_polys,
                 det_class=b.get("class_name", "") or "",
             ))
+            regions[-1].angle_src = ang_src
 
         before = len(regions)
         regions = self._merge_overlapping_regions(regions, iou_thresh=0.35, contain_thresh=0.65)
@@ -7150,6 +7224,8 @@ class MangaTranslator:
     def _verify_angle_signs(self, image: np.ndarray,
                             regions: List["TextRegion"]) -> None:
         for r in regions:
+            if str(getattr(r, "angle_src", "") or "") == "engine":
+                continue
             ang = float(getattr(r, "angle", 0.0) or 0.0)
             if abs(ang) < 6.0:
                 continue
