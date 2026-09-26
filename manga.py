@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-APP_VER = "1.7"
+APP_VER = "1.9"
 
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو مترجم مانگا و مانهوا به فارسی گفتاری ایرانی هستی. کار تو دوبله است، نه ترجمه لغت‌به‌لغت.
@@ -709,7 +709,13 @@ class LamaONNX:
         mask_in = mask_in[None, None]
         out = self.session.run(None, {self._in_image: img_in, self._in_mask: mask_in})[0]
 
-        out = np.clip(out[0].transpose(1, 2, 0), 0, 255).astype(np.uint8)
+        o = out[0].transpose(1, 2, 0).astype(np.float32)
+        try:
+            if float(np.max(o)) <= 1.5:
+                o = o * 255.0
+        except Exception:
+            pass
+        out = np.clip(o, 0, 255).astype(np.uint8)
 
         predicted = cv2.resize(out[:rh, :rw], orig_size, interpolation=cv2.INTER_LANCZOS4)
         result = img_rgb.copy()
@@ -814,7 +820,13 @@ class LamaMangaONNX:
         mask_in = msk.astype(np.float32)[None, None]
         out = self.session.run(None, {self._in_image: img_in, self._in_mask: mask_in})[0]
 
-        o = np.clip(out[0].transpose(1, 2, 0), 0, 1)
+        o = out[0].transpose(1, 2, 0).astype(np.float32)
+        try:
+            if float(np.max(o)) > 1.5:
+                o = o / 255.0
+        except Exception:
+            pass
+        o = np.clip(o, 0.0, 1.0)
         o = (o * 255).astype(np.uint8)
         predicted = cv2.resize(o[:rh, :rw], (ow, oh), interpolation=cv2.INTER_LANCZOS4)
         result = img_rgb.copy()
@@ -1625,7 +1637,7 @@ PROVIDER_PRESETS = {
         "default_model": "gpt-4o-mini",
         "env_key": "OPENAI_API_KEY",
     },
-    "chatgpt": {  
+    "chatgpt": {
         "type": "openai",
         "base_url": "https://api.openai.com/v1",
         "default_model": "gpt-4o-mini",
@@ -1649,7 +1661,7 @@ PROVIDER_PRESETS = {
         "default_model": "grok-2-latest",
         "env_key": "XAI_API_KEY",
     },
-    "grok": {  
+    "grok": {
         "type": "openai",
         "base_url": "https://api.x.ai/v1",
         "default_model": "grok-2-latest",
@@ -1671,9 +1683,69 @@ PROVIDER_PRESETS = {
         "type": "openai",
         "base_url": "http://localhost:11434/v1",
         "default_model": "llama3.2",
-        "env_key": "OLLAMA_API_KEY",  
+        "env_key": "OLLAMA_API_KEY",
+    },
+    "custom": {
+        "type": "openai",
+        "base_url": "",
+        "default_model": "",
+        "env_key": "CUSTOM_API_KEY",
     },
 }
+
+
+def normalize_api_base(url: str) -> str:
+    if not url:
+        return ""
+    u = str(url).strip().strip('"').strip("'").rstrip("/")
+    if not u:
+        return ""
+    if "://" not in u:
+        u = "https://" + u
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(u)
+        host = (p.hostname or "").lower()
+    except Exception:
+        return ""
+    if not host:
+        return ""
+    if "." not in host and host != "localhost" and not host.startswith("127."):
+        return ""
+    return u
+
+
+def _ask(prompt: str) -> str:
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+
+def _prompt_custom_endpoint(base: str = "", model: str = "") -> Tuple[str, str]:
+
+    print("── تنظیم سرویس دلخواه (سازگار با OpenAI) ──")
+    for _attempt in range(3):
+        if not base:
+            raw = _ask("دامنهٔ API (مثال: https://api.example.com/v1) "
+                       "[خالی = انصراف]: ")
+            if not raw:
+                break
+            base = normalize_api_base(raw)
+            if base:
+                print(f"  ✔ دامنه: {base}")
+            else:
+                print("  ✗ این آدرس معتبر نیست — مثل https://api.example.com/v1 بنویس "
+                      "(https:// اگر جا افتاده باشد خودکار اضافه می‌شود).")
+                continue
+        if model:
+            break
+        model = _ask("نام مدل (مثال: gpt-4o-mini) [خالی = انصراف]: ")
+        if model:
+            break
+        print("  ✗ مدل نمی‌تواند خالی باشد — مثال: gpt-4o-mini")
+    return base, model
 
 
 class GeminiQuotaExhausted(Exception):
@@ -2061,7 +2133,9 @@ class MangaTranslator:
         self._model_cascade: List[str] = []
         self._model_index: int = 0
         self._last_good_model: str = ""
-        self.api_base = api_base or self.provider_cfg.get("base_url")
+        _user_base = (api_base or "").strip()
+        self.api_base = normalize_api_base(_user_base) if _user_base \
+            else self.provider_cfg.get("base_url")
 
         self.font_path = font_path
 
@@ -2357,12 +2431,16 @@ class MangaTranslator:
                 print(f"[*] رم گوشی: کل {total:.1f}GB / آزاد {avail:.1f}GB / "
                       f"{cores} هستهٔ CPU → LaMa-Manga روی CPU اجرا می‌شود "
                       f"(کندتر ولی تمیزتر از OpenCV).")
-            try:
-                print("    [*] بارگذاری big-lama.pt (TorchScript) ...")
-                self._lama = LamaTorch(prefer_gpu=self.use_gpu)
-                self._inpainter_name = "big-LaMa"
-            except Exception as e:
-                print(f"    [!] big-LaMa ناموفق ({e}) → LaMa-Manga ONNX")
+            if _torch_available():
+                try:
+                    print("    [*] بارگذاری big-lama.pt (TorchScript) ...")
+                    self._lama = LamaTorch(prefer_gpu=self.use_gpu)
+                    self._inpainter_name = "big-LaMa"
+                except Exception as e:
+                    print(f"    [!] big-LaMa ناموفق ({e}) → LaMa-Manga ONNX")
+            else:
+                print("    [*] torch در دسترس نیست → پاک‌سازی با LaMa ONNX")
+            if self._lama is None and self.use_lama:
                 try:
                     self._lama = LamaMangaONNX(
                         prefer_gpu=self.use_gpu,
@@ -4300,56 +4378,114 @@ class MangaTranslator:
         if pending and getattr(self, "use_lama", False):
             lama = self._get_lama()
             if lama is not None:
-                try:
-                    page_mask = cv2.dilate(mask, page_kernel)
-                    _wall = self._wall_lines(image)
-                    if _wall is not None:
-                        pm = page_mask > 0
-                        mk = mask > 0
-                        wl = _wall > 0
-                        page_mask = ((pm & mk) | (pm & ~wl)).astype(np.uint8) * 255
+                _qc_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
+                _img_h, _img_w = image.shape[:2]
+                _long = float(max(_img_h, _img_w))
+                _short = float(max(1.0, min(_img_h, _img_w)))
+                _extreme = _short * 2.5 < _long
+                if _extreme:
+                    print(f"  [*] صفحهٔ کشیده ({_img_w}x{_img_h}) → LaMa "
+                          f"خوشه‌به‌خوشه ({len(pending)} خوشه)")
                     t0 = time.time()
-                    page_out = lama(image, page_mask)
-                    dt = time.time() - t0
-                    if isinstance(page_out, np.ndarray):
-                        page_bgr = page_out
-                    else:
-                        page_bgr = np.array(page_out)
-                    if page_bgr.ndim == 2:
-                        page_bgr = cv2.cvtColor(page_bgr, cv2.COLOR_GRAY2BGR)
-                    else:
-                        page_bgr = cv2.cvtColor(page_bgr, cv2.COLOR_RGB2BGR)
-                    if page_bgr.shape[:2] != image.shape[:2]:
-                        raise ValueError("LaMa returned an unexpected image shape")
-                    print(f"  [*] LaMa کل صفحه یک‌جا: {dt:.1f}s "
-                          f"({len(pending)} خوشه)")
-                    _qc_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))
+                    _pad = 32
                     for c in pending:
                         cx0, cy0, cx1, cy1, crop_msk = c[:5]
-                        result = page_bgr[cy0:cy1, cx0:cx1]
                         try:
-                            _fm = (cv2.dilate(crop_msk, page_kernel) > 0)
-                            _ring_m = (cv2.dilate(crop_msk, _qc_kernel) > 0) & (~_fm)
-                            if _fm.any() and _ring_m.any():
-                                _g = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
-                                _bg_px = _g[_ring_m]
-                                _bright = _bg_px[_bg_px >= 160.0]
-                                if _bright.size >= max(50, int(0.02 * _bg_px.size)):
-                                    _bg_med = float(np.median(_bright))
-                                    _fill_med = float(np.median(_g[_fm]))
-                                    if _fill_med < 115.0 and _fill_med < _bg_med - 55.0:
-                                        print(f"  [!] خروجی LaMa لکهٔ تیره گذاشت "
-                                              f"({_fill_med:.0f} در برابر کاغذ {_bg_med:.0f}) "
-                                              f"→ پرکردنِ صاف/OpenCV برای این خوشه")
-                                        result = None
+                            ex0, ey0 = max(0, cx0 - _pad), max(0, cy0 - _pad)
+                            ex1 = min(_img_w, cx1 + _pad)
+                            ey1 = min(_img_h, cy1 + _pad)
+                            if ex1 - ex0 < 16 or ey1 - ey0 < 16:
+                                continue
+                            sub_img = image[ey0:ey1, ex0:ex1]
+                            sub_msk = np.zeros(sub_img.shape[:2], dtype=np.uint8)
+                            sub_msk[cy0 - ey0:cy1 - ey0,
+                                    cx0 - ex0:cx1 - ex0] = \
+                                cv2.dilate(crop_msk, page_kernel)
+                            out = lama(sub_img, sub_msk)
+                            sub_bgr = out if isinstance(out, np.ndarray) \
+                                else np.array(out)
+                            if sub_bgr.ndim == 2:
+                                sub_bgr = cv2.cvtColor(sub_bgr, cv2.COLOR_GRAY2BGR)
+                            else:
+                                sub_bgr = cv2.cvtColor(sub_bgr, cv2.COLOR_RGB2BGR)
+                            if sub_bgr.shape[:2] != sub_img.shape[:2]:
+                                continue
+                            result = sub_bgr[cy0 - ey0:cy1 - ey0,
+                                             cx0 - ex0:cx1 - ex0]
+                            try:
+                                _fm = (cv2.dilate(crop_msk, page_kernel) > 0)
+                                _ring_m = (cv2.dilate(crop_msk, _qc_kernel) > 0) & (~_fm)
+                                if _fm.any() and _ring_m.any():
+                                    _g = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+                                    _bg_px = _g[_ring_m]
+                                    _bright = _bg_px[_bg_px >= 160.0]
+                                    if _bright.size >= max(50, int(0.02 * _bg_px.size)):
+                                        _bg_med = float(np.median(_bright))
+                                        _fill_med = float(np.median(_g[_fm]))
+                                        if _fill_med < 115.0 and _fill_med < _bg_med - 55.0:
+                                            result = None
+                            except Exception:
+                                pass
+                            if result is not None:
+                                c[4] = cv2.dilate(crop_msk, page_kernel)
+                                c[5] = result
+                                c[6] = "LaMa"
                         except Exception:
-                            pass
-                        if result is not None:
-                            c[4] = cv2.dilate(crop_msk, page_kernel)
-                            c[5] = result
-                            c[6] = "LaMa"
-                except Exception as e:
-                    print(f"  [!] LaMa failed ({e}); using OpenCV fallback.")
+                            continue
+                    dt = time.time() - t0
+                    _done = sum(1 for c in pending if c[6] == "LaMa")
+                    if _done:
+                        print(f"  [*] LaMa خوشه‌ای: {dt:.1f}s ({_done}/{len(pending)} خوشه)")
+                else:
+                    try:
+                        page_mask = cv2.dilate(mask, page_kernel)
+                        _wall = self._wall_lines(image)
+                        if _wall is not None:
+                            pm = page_mask > 0
+                            mk = mask > 0
+                            wl = _wall > 0
+                            page_mask = ((pm & mk) | (pm & ~wl)).astype(np.uint8) * 255
+                        t0 = time.time()
+                        page_out = lama(image, page_mask)
+                        dt = time.time() - t0
+                        if isinstance(page_out, np.ndarray):
+                            page_bgr = page_out
+                        else:
+                            page_bgr = np.array(page_out)
+                        if page_bgr.ndim == 2:
+                            page_bgr = cv2.cvtColor(page_bgr, cv2.COLOR_GRAY2BGR)
+                        else:
+                            page_bgr = cv2.cvtColor(page_bgr, cv2.COLOR_RGB2BGR)
+                        if page_bgr.shape[:2] != image.shape[:2]:
+                            raise ValueError("LaMa returned an unexpected image shape")
+                        print(f"  [*] LaMa کل صفحه یک‌جا: {dt:.1f}s "
+                              f"({len(pending)} خوشه)")
+                        for c in pending:
+                            cx0, cy0, cx1, cy1, crop_msk = c[:5]
+                            result = page_bgr[cy0:cy1, cx0:cx1]
+                            try:
+                                _fm = (cv2.dilate(crop_msk, page_kernel) > 0)
+                                _ring_m = (cv2.dilate(crop_msk, _qc_kernel) > 0) & (~_fm)
+                                if _fm.any() and _ring_m.any():
+                                    _g = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
+                                    _bg_px = _g[_ring_m]
+                                    _bright = _bg_px[_bg_px >= 160.0]
+                                    if _bright.size >= max(50, int(0.02 * _bg_px.size)):
+                                        _bg_med = float(np.median(_bright))
+                                        _fill_med = float(np.median(_g[_fm]))
+                                        if _fill_med < 115.0 and _fill_med < _bg_med - 55.0:
+                                            print(f"  [!] خروجی LaMa لکهٔ تیره گذاشت "
+                                                  f"({_fill_med:.0f} در برابر کاغذ {_bg_med:.0f}) "
+                                                  f"→ پرکردنِ صاف/OpenCV برای این خوشه")
+                                            result = None
+                            except Exception:
+                                pass
+                            if result is not None:
+                                c[4] = cv2.dilate(crop_msk, page_kernel)
+                                c[5] = result
+                                c[6] = "LaMa"
+                    except Exception as e:
+                        print(f"  [!] LaMa failed ({e}); using OpenCV fallback.")
             else:
                 print("  [!] LaMa در دسترس نیست → OpenCV برای خوشه‌های باقی‌مانده")
 
@@ -5613,6 +5749,12 @@ class MangaTranslator:
                             if self._drop_current_model_and_switch(
                                     reason="سهمیهٔ روزانهٔ این مدل"):
                                 continue
+                        if len(set(self._model_cascade or [])) > 1 \
+                                and self._switch_to_next_model(
+                                    reason="rate→تعویض فوری مدل"):
+                            self._recreate_api_client()
+                            time.sleep(0.2)
+                            continue
                         _rd = self._mark_key_cooldown(e)
                         wait_s = (min(max(_rd, 2.0 + attempt), 60.0) if _rd
                                   else min(2.0 + attempt, 6.0))
@@ -5729,15 +5871,21 @@ class MangaTranslator:
                         if self._drop_current_model_and_switch(
                                 reason="سهمیهٔ روزانهٔ این مدل"):
                             continue
+                    if len(set(self._model_cascade or [])) > 1 \
+                            and self._switch_to_next_model(
+                                reason="rate→تعویض فوری مدل"):
+                        self._recreate_api_client()
+                        time.sleep(0.2)
+                        continue
+                    if self._switch_to_next_key(reason="rate/quota", cycle=True):
+                        self._recreate_api_client()
+                        time.sleep(0.3)
+                        continue
                     _rd = self._mark_key_cooldown(e)
                     wait_s = (min(max(_rd, 3.0 + attempt), 60.0) if _rd
                               else min(3.0 + attempt, 8.0))
                     print(f"    [*] صبر {wait_s:.0f} ثانیه برای بازیابی سهمیه...")
                     time.sleep(wait_s)
-                    if self._switch_to_next_key(reason="rate/quota", cycle=True):
-                        self._recreate_api_client()
-                        time.sleep(0.5)
-                        continue
                     if self._switch_to_next_model(reason="rate/quota"):
                         time.sleep(0.5)
                         continue
@@ -6948,8 +7096,19 @@ class MangaTranslator:
             ang_ = self._estimate_angle_from_polys(line_polys)
             if abs(ang_) < 3.0:
                 try:
-                    _iy1, _iy2 = max(0, y1), min(image.shape[0], y2)
-                    _ix1, _ix2 = max(0, x1), min(image.shape[1], x2)
+                    _tx1 = _ty1 = None
+                    if line_polys:
+                        try:
+                            _pts_all = np.concatenate(
+                                [np.asarray(p).reshape(-1, 2) for p in line_polys])
+                            _tx1, _ty1 = float(_pts_all[:, 0].min()), float(_pts_all[:, 1].min())
+                            _tx2, _ty2 = float(_pts_all[:, 0].max()), float(_pts_all[:, 1].max())
+                        except Exception:
+                            _tx1 = _ty1 = None
+                    if _tx1 is None:
+                        _tx1, _ty1, _tx2, _ty2 = float(x1), float(y1), float(x2), float(y2)
+                    _iy1, _iy2 = max(0, int(_ty1)), min(image.shape[0], int(_ty2) + 1)
+                    _ix1, _ix2 = max(0, int(_tx1)), min(image.shape[1], int(_tx2) + 1)
                     if _ix2 - _ix1 >= 40 and _iy2 - _iy1 >= 14:
                         a_ink2 = MangaTranslator._ink_slant_angle(
                             image[_iy1:_iy2, _ix1:_ix2])
@@ -6995,10 +7154,24 @@ class MangaTranslator:
             if abs(ang) < 6.0:
                 continue
             try:
-                x, y, w_, h_ = [int(v) for v in r.rect]
-                x1, y1 = max(0, x), max(0, y)
-                x2 = min(int(image.shape[1]), x + max(8, w_))
-                y2 = min(int(image.shape[0]), y + max(8, h_))
+                x1 = y1 = None
+                polys = list(getattr(r, "ocr_polys", None) or [])
+                if polys:
+                    try:
+                        _pa = np.concatenate(
+                            [np.asarray(p).reshape(-1, 2) for p in polys])
+                        x1, y1 = float(_pa[:, 0].min()), float(_pa[:, 1].min())
+                        x2, y2 = float(_pa[:, 0].max()), float(_pa[:, 1].max())
+                    except Exception:
+                        x1 = y1 = None
+                if x1 is None:
+                    x, y, w_, h_ = [int(v) for v in r.rect]
+                    x1, y1 = max(0, x), max(0, y)
+                    x2 = min(int(image.shape[1]), x + max(8, w_))
+                    y2 = min(int(image.shape[0]), y + max(8, h_))
+                x1, y1 = max(0, int(x1)), max(0, int(y1))
+                x2 = min(int(image.shape[1]), int(x2) + 1)
+                y2 = min(int(image.shape[0]), int(y2) + 1)
                 if x2 - x1 < 40 or y2 - y1 < 14:
                     continue
                 a_ink = MangaTranslator._ink_slant_angle(image[y1:y2, x1:x2])
@@ -9215,7 +9388,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--provider",
         default="gemini",
         choices=list(PROVIDER_PRESETS.keys()),
-        help="ارائه‌دهنده AI: gemini | openai | chatgpt | deepseek | groq | xai | grok | together | openrouter | ollama"
+        help="ارائه‌دهنده AI: gemini | openai | deepseek | groq | xai | together | openrouter | ollama "
+             "(نام‌های قدیمی chatgpt و grok هم پذیرفته می‌شوند: همان openai و xai)"
     )
     p.add_argument("--api-key", action="append", default=None,
                    help="کلید API. چندبار یا با کاما. env متناظر هم خوانده می‌شود")
@@ -9356,6 +9530,37 @@ def main():
             if v:
                 keys.extend(k.strip() for k in v.replace(";", ",").split(",") if k.strip())
 
+    if provider == "custom":
+        if not getattr(args, "api_base", None):
+            args.api_base = os.environ.get("CUSTOM_BASE_URL", "").strip() or None
+        if not getattr(args, "model", None):
+            args.model = os.environ.get("CUSTOM_MODEL", "").strip() or None
+
+        if (not args.api_base or not args.model) and sys.stdin.isatty() \
+                and not getattr(args, "fake_translate", False) \
+                and not getattr(args, "clean_only", False):
+            args.api_base, args.model = _prompt_custom_endpoint(
+                args.api_base or "", args.model or "")
+
+        _ab = normalize_api_base(args.api_base or "")
+        if not _ab:
+            print("خطا: برای provider «custom» دامنهٔ API معتبر لازم است.",
+                  file=sys.stderr)
+            print("  نمونهٔ درست:  --api-base https://api.example.com/v1",
+                  file=sys.stderr)
+            print("  (https:// اگر جا افتاده باشد خودکار اضافه می‌شود؛ "
+                  "یا env CUSTOM_BASE_URL را تنظیم کن.)",
+                  file=sys.stderr)
+            sys.exit(1)
+        args.api_base = _ab
+        if not args.model:
+            print("خطا: برای provider «custom» نام مدل لازم است — "
+                  "--model را بده (مثال: --model gpt-4o-mini) "
+                  "یا env CUSTOM_MODEL را تنظیم کن.",
+                  file=sys.stderr)
+            sys.exit(1)
+        print(f"[*] ارائه‌دهندهٔ سفارشی: base={args.api_base} | model={args.model}")
+
     seen = set()
     unique_keys = []
     for k in keys:
@@ -9363,7 +9568,7 @@ def main():
             seen.add(k)
             unique_keys.append(k)
 
-    if not unique_keys and provider != "ollama" \
+    if not unique_keys and provider not in ("ollama", "custom") \
             and not getattr(args, "fake_translate", False) \
             and not getattr(args, "clean_only", False):
         print(
