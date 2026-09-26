@@ -10,10 +10,12 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.request
 from datetime import datetime
+from typing import Optional
 
 APP_NAME = "مانگا مترجم"
-APP_VER = "1.7"
+APP_VER = "1.9"
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGA_PY = os.path.join(HERE, "manga.py")
 WORK_DIR = os.path.join(HERE, "workspace")
@@ -27,8 +29,9 @@ MODELS_DIR = os.path.expanduser("~/.cache/manga_translator_models")
 KEY_ENV_ORDER = ("GEMINI_API_KEYS", "GEMINI_API_KEY", "GOOGLE_API_KEY",
                  "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GROQ_API_KEY",
                  "XAI_API_KEY", "TOGETHER_API_KEY", "OPENROUTER_API_KEY", "API_KEY")
-PROVIDERS = ["gemini", "gemini-openai", "openai", "chatgpt", "deepseek", "groq",
-             "xai", "grok", "together", "openrouter", "ollama"]
+PROVIDER_ALIASES = {"chatgpt": "openai", "grok": "xai"}
+PROVIDERS = ["gemini", "gemini-openai", "openai", "deepseek", "groq",
+             "xai", "together", "openrouter", "ollama", "custom"]
 
 DEFAULT_GEMINI_KEYS = []#",".join(["123:])
 
@@ -153,6 +156,35 @@ def is_custom_instruction(text: str) -> bool:
     return _norm_instr(t) != _norm_instr(d)
 
 
+def normalize_api_base(url: str) -> str:
+    if not url:
+        return ""
+    u = str(url).strip().strip('"').strip("'").rstrip("/")
+    if not u:
+        return ""
+    if "://" not in u:
+        u = "https://" + u
+    try:
+        from urllib.parse import urlparse
+        p = urlparse(u)
+        host = (p.hostname or "").lower()
+    except Exception:
+        return ""
+    if not host:
+        return ""
+    if "." not in host and host != "localhost" and not host.startswith("127."):
+        return ""
+    return u
+
+
+def _cli_ask(prompt: str) -> str:
+    try:
+        return input(prompt).strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return ""
+
+
 def instruction_for_config(text: str) -> str:
     t = (text or "").strip()
     return t if is_custom_instruction(t) else ""
@@ -174,9 +206,16 @@ def default_keys() -> str:
 def load_config() -> dict:
     try:
         with open(CFG_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            cfg = json.load(f)
     except Exception:
         return {}
+    try:
+        p = str(cfg.get("provider") or "").strip().lower()
+        if p in PROVIDER_ALIASES:
+            cfg["provider"] = PROVIDER_ALIASES[p]
+    except Exception:
+        pass
+    return cfg
 
 
 def save_config(cfg: dict) -> None:
@@ -237,9 +276,129 @@ def download_fonts(log=print) -> int:
             log(f"  ✖ {fname} ناموفق — بعداً خودتان در fonts/ بگذارید")
     return n
 
+GITHUB_RAW_BASE = ("https://raw.githubusercontent.com/"
+                   "amirwolf5122/Manga-AutoTranslate/main/")
+UPDATE_FILES = ("manga.py", "manga_app.py")
+UPDATE_INTERVAL_S = 12 * 3600
+UPD_DIR = os.path.join(WORK_DIR, "updates")
+
+
+def _read_ver_from_src(src: str) -> str:
+    m = re.search(r'APP_VER\s*=\s*"([^"]+)"', src or "")
+    return m.group(1) if m else "0"
+
+
+def _cmp_ver(a: str, b: str) -> int:
+    try:
+        pa = [int(x) for x in str(a).split(".")]
+        pb = [int(x) for x in str(b).split(".")]
+    except Exception:
+        return 0
+    while len(pa) < len(pb):
+        pa.append(0)
+    while len(pb) < len(pa):
+        pb.append(0)
+    return (pa > pb) - (pa < pb)
+
+
+def _local_file_ver(name: str) -> str:
+    try:
+        with open(os.path.join(HERE, name), encoding="utf-8") as f:
+            return _read_ver_from_src(f.read(8192))
+    except Exception:
+        return "0"
+
+
+def _http_get(url: str, timeout: float = 30.0) -> bytes:
+    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return r.read()
+
+
+def check_updates(force: bool = False, log=print) -> dict:
+    try:
+        last = float(load_config().get("last_update_check", 0) or 0)
+    except Exception:
+        last = 0.0
+    now = time.time()
+    if not force and last and (now - last) < UPDATE_INTERVAL_S:
+        return {"checked": False}
+
+    rep: dict = {"checked": True, "update_available": False, "files": {}}
+    for name in UPDATE_FILES:
+        info = {"local": _local_file_ver(name), "remote": "", "newer": False}
+        try:
+            src = _http_get(GITHUB_RAW_BASE + name).decode("utf-8", "ignore")
+            info["remote"] = _read_ver_from_src(src[:8192])
+            info["newer"] = (info["remote"] != "0"
+                             and _cmp_ver(info["remote"], info["local"]) > 0)
+            if info["newer"]:
+                os.makedirs(UPD_DIR, exist_ok=True)
+                with open(os.path.join(UPD_DIR, name + ".staged"),
+                          "w", encoding="utf-8") as f:
+                    f.write(src)
+        except Exception as e:
+            info["error"] = str(e)[:120]
+        rep["files"][name] = info
+        if info["newer"]:
+            rep["update_available"] = True
+    try:
+        cfg = load_config()
+        cfg["last_update_check"] = now
+        save_config(cfg)
+    except Exception:
+        pass
+    if rep.get("checked"):
+        if rep.get("update_available"):
+            log("🔄 آپدیت جدید پیدا شد: " + ", ".join(
+                f"{n} v{i['remote']}" for n, i in rep["files"].items() if i["newer"]))
+        else:
+            log("✔ برنامه به‌روز است.")
+    return rep
+
+
+def apply_updates(report: Optional[dict] = None, log=print) -> list:
+
+    installed = []
+    rep = report if (report and report.get("checked")) else check_updates(force=True, log=log)
+    for name, info in (rep.get("files") or {}).items():
+        staged = os.path.join(UPD_DIR, name + ".staged")
+        if not (info.get("newer") and os.path.isfile(staged)):
+            continue
+        try:
+            dst = os.path.join(HERE, name)
+            bak = dst + ".bak"
+            if os.path.isfile(dst):
+                shutil.copyfile(dst, bak)
+            os.replace(staged, dst)
+            installed.append(f"{name} → v{info['remote']}")
+            log(f"✔ نصب شد: {name} v{info['remote']} (بکاپ: {os.path.basename(bak)})")
+        except Exception as e:
+            log(f"✖ نصب {name} ناموفق: {e}")
+    if installed:
+        log("🔁 برای فعال‌شدن کامل، برنامه را ببندید و دوباره باز کنید.")
+    return installed
+
+
+def auto_update_on_start(log=print) -> None:
+
+    def _worker():
+        while True:
+            try:
+                rep = check_updates(force=False, log=log)
+                if rep.get("update_available"):
+                    apply_updates(rep, log=log)
+            except Exception:
+                pass
+            time.sleep(UPDATE_INTERVAL_S)
+
+    try:
+        th = threading.Thread(target=_worker, daemon=True)
+        th.start()
+    except Exception:
+        pass
 
 _ft_checked: dict = {}
-
 
 def _font_persian_ok(path: str) -> bool:
     if path in _ft_checked:
@@ -532,6 +691,7 @@ def run_cli_interactive():
         ("openrouter", "OpenRouter"),
         ("ollama", "لوکال - بدون کلید"),
         ("together", "Together AI"),
+        ("custom", "سرویس دلخواه سازگار با OpenAI (دامنه + توکن + مدل)"),
     ]
     for i, (pid, desc) in enumerate(prov_menu, 1):
         print(f"  {i}) {pid:12} ({desc})")
@@ -544,6 +704,38 @@ def run_cli_interactive():
         or cfg.get("api_keys") or default_keys()
     model = input(f"مدل [{cfg.get('model', '') or 'پیش‌فرض'}]: ").strip() \
         or cfg.get("model", "")
+    api_base_v = ""
+    if provider == "custom":
+        print("── سرویس دلخواه (سازگار با OpenAI) ──")
+        api_base_v = str(cfg.get("api_base", "") or "")
+        for _try in range(3):
+            hint = f" [Enter = همان {api_base_v}]" if api_base_v else " [خالی = انصراف]"
+            raw = _cli_ask("دامنهٔ API (مثال: https://api.example.com/v1)" + hint + ": ")
+            if not raw and api_base_v:
+                break
+            if not raw:
+                print("  ✗ provider «custom» بدون دامنهٔ API کار نمی‌کند — دوباره وارد کن.")
+                continue
+            _ab = normalize_api_base(raw)
+            if not _ab:
+                print("  ✗ آدرس معتبر نیست — مثل https://api.example.com/v1 بنویس "
+                      "(https:// خودکار اضافه می‌شود).")
+                continue
+            api_base_v = _ab
+            break
+        if not api_base_v:
+            print("❌ انصراف — دامنهٔ API داده نشد. provider دیگری انتخاب کن یا دوباره اجرا کن.")
+            return
+        if not model:
+            for _try in range(3):
+                model = _cli_ask("نام مدل (مثال: gpt-4o-mini) [اجباری]: ")
+                if model:
+                    break
+                print("  ✗ مدل نمی‌تواند خالی باشد — مثال: gpt-4o-mini")
+            if not model:
+                print("❌ انصراف — نام مدل داده نشد.")
+                return
+        print(f"  ✔ دامنه: {api_base_v} | مدل: {model}")
 
     font_v = cfg.get("font") or find_font()
     if not font_v or not os.path.isfile(font_v):
@@ -571,6 +763,8 @@ def run_cli_interactive():
         cmd += ["--api-key", ",".join(klist)]
     if model:
         cmd += ["--model", model]
+    if provider == "custom" and api_base_v:
+        cmd += ["--api-base", api_base_v]
     cmd += ["--lama", "--cpu"]
 
     print("\n▶ " + " ".join(cmd) + "\n")
@@ -699,9 +893,41 @@ def run_desktop():
              bg=C_BG2, fg=C_TXT).pack(side="right", pady=9)
     tk.Label(head, text=f"v{APP_VER}", font=("IBM Plex Mono", 9),
              bg=C_BG2, fg=C_MUT).pack(side="left", padx=10)
+    upd_lbl = tk.Label(head, text="", font=(None, 9), bg=C_BG2, fg=C_MUT)
+    upd_lbl.pack(side="left", padx=4)
+
+    def _run_update(manual=True):
+        def _work():
+            try:
+                rep = check_updates(force=manual, log=lambda m: None)
+                if not rep.get("checked"):
+                    return
+                if rep.get("update_available"):
+                    root.after(0, lambda: upd_lbl.config(
+                        text="🔄 آپدیت جدید: " + ", ".join(
+                            f"{n} v{i['remote']}" for n, i in rep["files"].items()
+                            if i.get("newer")),
+                        fg=C_OK))
+                    installed = apply_updates(rep, log=lambda m: None)
+                    if installed:
+                        root.after(0, lambda: upd_lbl.config(
+                            text="✔ نصب شد — برنامه را دوباره باز کنید", fg=C_OK))
+                elif manual:
+                    root.after(0, lambda: upd_lbl.config(
+                        text="✔ به‌روز است", fg=C_MUT))
+            except Exception:
+                if manual:
+                    root.after(0, lambda: upd_lbl.config(
+                        text="✖ چک آپدیت ناموفق", fg=C_ERR))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    ttk.Button(head, text="🔄 آپدیت", width=9,
+               command=lambda: (_run_update(True))).pack(side="left", padx=(2, 8))
     status_lbl = tk.Label(head, text="● آماده", font=(None, 10, "bold"),
                           bg=C_BG2, fg=C_OK)
     status_lbl.pack(side="left", padx=4)
+    _run_update(manual=False)
 
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True, padx=10, pady=10)
@@ -776,6 +1002,19 @@ def run_desktop():
     model_var = tk.StringVar(value=cfg.get("model", ""))
     ttk.Label(row_ai1, text="مدل (خالی = پیش‌فرض):").pack(side="right", padx=(0, 4))
     ttk.Entry(row_ai1, textvariable=model_var, width=22).pack(side="right")
+    row_ab = ttk.Frame(card_ai)
+    field(row_ab, "دامنهٔ API سفارشی (فقط برای «custom» — مثال: https://api.example.com/v1)")
+    apibase_var = tk.StringVar(value=cfg.get("api_base", ""))
+    ttk.Entry(row_ab, textvariable=apibase_var).pack(fill="x")
+
+    def _toggle_custom_fields(*_a):
+        if str(prov_var.get()).strip() == "custom":
+            row_ab.pack(fill="x", pady=(6, 0))
+        else:
+            row_ab.pack_forget()
+
+    prov_var.trace_add("write", _toggle_custom_fields)
+    _toggle_custom_fields()
     field(card_ai, "کلید API (چند کلید = با کاما، چرخش خودکار)")
     keys_var = tk.StringVar(value=cfg.get("api_keys") or default_keys())
     keys_entry = ttk.Entry(card_ai, textvariable=keys_var, show="•")
@@ -804,6 +1043,7 @@ def run_desktop():
             cur["api_keys"] = keys_var.get()
             cur["provider"] = prov_var.get()
             cur["model"] = model_var.get()
+            cur["api_base"] = apibase_var.get()
             cur["ocr_lang"] = _ocr_value_for.get(ocr_lang_var.get(), "en")
             save_config(cur)
         except Exception:
@@ -1417,6 +1657,22 @@ def run_desktop():
         if not os.path.exists(src) and not src.lower().startswith(("http://", "https://")):
             messagebox.showerror(APP_NAME, "مسیر پیدا نشد:\n" + src)
             return
+        _prov_v = str(prov_var.get()).strip()
+        if _prov_v == "custom":
+            _ab = normalize_api_base(apibase_var.get())
+            if not _ab:
+                messagebox.showerror(
+                    APP_NAME,
+                    "provider «custom» به دامنهٔ API معتبر نیاز دارد.\n"
+                    "مثال: https://api.example.com/v1\n"
+                    "(https:// اگر جا افتاده باشد خودکار اضافه می‌شود.)")
+                return
+            apibase_var.set(_ab)
+            if not model_var.get().strip():
+                messagebox.showerror(
+                    APP_NAME,
+                    "provider «custom» به نام مدل نیاز دارد.\nمثال: gpt-4o-mini")
+                return
         font_v = font_vars["main"].get().strip() or find_font()
         if not font_v or not os.path.isfile(font_v):
             messagebox.showerror(APP_NAME, "فونت اصلی معتبر پیدا نشد.")
@@ -1474,6 +1730,8 @@ def run_desktop():
             cmd += ["--ocr-lang"] + _ocr_lang_v.split()
         if model_var.get().strip():
             cmd += ["--model", model_var.get().strip()]
+        if str(prov_var.get()).strip() == "custom" and apibase_var.get().strip():
+            cmd += ["--api-base", apibase_var.get().strip()]
         if lama_var.get():
             cmd += ["--lama"]
         if cpu_var.get():
@@ -2217,6 +2475,13 @@ def run_web():
                                    value="",
                                    placeholder="gemini-3.8-flash", scale=2,
                                    elem_id="manga_model")
+            api_base = gr.Textbox(label="دامنهٔ API سفارشی (فقط برای provider «custom»)",
+                                  value=str(cfg.get("api_base", "") or ""),
+                                  placeholder="https://your-server.example.com/v1",
+                                  info="فقط وقتی provider = custom باشد دیده می‌شود؛ https:// اگر جا افتاده باشد خودکار اضافه می‌شود.",
+                                  elem_id="manga_api_base",
+                                  visible=False,
+                                  scale=3)
             gr.Markdown("<div class='hint'>کلید از aistudio.google.com (Gemini) یا "
                         "platform.openai.com (ChatGPT) یا console.groq.com بگیرید. "
                         "تنظیمات وب فقط در مرورگر ذخیره می‌شود.</div>")
@@ -3200,7 +3465,7 @@ def run_web():
                             batchw_v, maxre_v, reqdelay_v, temp_v, readord_v,
                             use_lama_v, force_cpu_v, two_pass_v,
                             fake_test_v, clean_only_v, web_debug_v, instruction_text_v,
-                            glossary_text_v, story_brief_v,
+                            glossary_text_v, story_brief_v, api_base_v,
                             *tone_args):
             sid = (sid or sid_box_v or "").strip()
             sid = _find_active_sid(sid) or sid
@@ -3248,6 +3513,19 @@ def run_web():
                 return _pack("🚀  شروع ترجمه",
                              "❌ فونت فارسی روی سرور نیست — یک .ttf آپلود کنید.")
 
+            prov_s = str(provider_v or "").strip()
+            if prov_s == "custom":
+                _ab = normalize_api_base(str(api_base_v or ""))
+                if not _ab:
+                    return _pack("🚀  شروع ترجمه",
+                                 "❌ provider «custom» به دامنهٔ API معتبر نیاز دارد.\n"
+                                 "   مثال: https://api.example.com/v1\n"
+                                 "   (https:// اگر جا افتاده باشد خودکار اضافه می‌شود.)")
+                if not str(model_v or "").strip():
+                    return _pack("🚀  شروع ترجمه",
+                                 "❌ provider «custom» به نام مدل نیاز دارد (مثال: gpt-4o-mini).")
+                api_base_v = _ab
+
             ext = {"PDF": ".pdf", "ZIP": ".zip", "HTML": ".html", "PSD": ".psd", "پوشهٔ تصاویر": ""}[out_fmt_v]
             base = smart_output_base(str(src))
             user_out_dir = os.path.join(OUT_DIR, sid[:12])
@@ -3282,6 +3560,8 @@ def run_web():
                    "--request-delay", str(float(reqdelay_v)),
                    "--temperature", str(float(temp_v)),
                    "--reading-order", str(readord_v)]
+            if prov_s == "custom" and str(api_base_v or "").strip():
+                cmd += ["--api-base", str(api_base_v).strip()]
             cmd += font_args()
             active_tones = ["normal"]
             for si, slot in enumerate(tone_slots):
@@ -3390,6 +3670,15 @@ def run_web():
                 dbg_row=gr.update(visible=False),
             )
 
+        try:
+            provider.change(
+                lambda p: gr.update(visible=str(p or "").strip() == "custom"),
+                inputs=[provider], outputs=[api_base],
+                api_name="toggle_custom_base",
+            )
+        except Exception:
+            pass
+
         _click_kw = dict(
             inputs=[session_id, sid_box, inp_path, inp_upload, provider, api_keys, model,
                     ocr_lang,
@@ -3398,7 +3687,7 @@ def run_web():
                     batchw, maxre, reqdelay, temp, readord,
                     use_lama, force_cpu, two_pass,
                     fake_test, clean_only, web_debug, instruction_text,
-                    glossary_text, story_brief] + tone_uploads + tone_enables,
+                    glossary_text, story_brief, api_base] + tone_uploads + tone_enables,
             outputs=[session_id, sid_box, run_btn, log_box, dl_btn, btn_view, result_group, viewer_html, html_state,
                      dl_btn_debug, btn_view_debug, debug_row, html_debug_state],
             concurrency_limit=8,
@@ -4141,6 +4430,9 @@ def run_web():
 def main():
     ensure_dirs()
     args = sys.argv[1:]
+
+    if not any(a in ("--web", "-h", "--help") for a in args):
+        auto_update_on_start(log=print)
 
     if not manga_py_ok() and not any(a in ("--web", "-h", "--help") for a in args):
         print(MANGA_MIXED_MSG)
