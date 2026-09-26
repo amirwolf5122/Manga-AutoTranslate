@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-APP_VER = "1.10"
+APP_VER = "1.12"
 
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو مترجم مانگا و مانهوا به فارسی گفتاری ایرانی هستی. کار تو دوبله است، نه ترجمه لغت‌به‌لغت.
@@ -153,6 +153,9 @@ except Exception:
     _IS_ANDROID = False
     
 def _ensure_all_dependencies() -> None:
+    if _IS_ANDROID:
+        print("[*] اندروید: وابستگی‌ها داخل APK موجود است — بررسی pip رد شد.")
+        return
     print("[*] بررسی وابستگی‌ها ...")  
     core = []
     if not _can_import("numpy"):
@@ -226,6 +229,25 @@ def _ensure_all_dependencies() -> None:
     
     if not _can_import("openai"):
         _pip_install("openai")
+
+    if not _IS_ANDROID and not _torch_available():
+        print("[*] نصب torch CPU برای big-lama.pt — فقط بار اول (~۲۰۰MB) ...")
+        try:
+            r = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-q", "--prefer-binary",
+                 "torch", "--index-url", "https://download.pytorch.org/whl/cpu"],
+                capture_output=True, text=True, timeout=1800)
+            _torch_ok = (r.returncode == 0)
+        except Exception as _e:
+            print(f"    [!] {_e}")
+            _torch_ok = False
+        if not _torch_ok:
+            print("    [!] torch CPU ناموفق → pip معمولی ...")
+            _torch_ok = _pip_install("torch")
+        if _torch_ok:
+            print("[+] torch نصب شد → پاک‌سازی big-lama.pt فعال می‌شود.")
+        else:
+            print("[!] torch نصب نشد → پاک‌سازی با OpenCV/LaMa-ONNX ادامه می‌دهد.")
         
 
     import platform as _platform
@@ -2063,6 +2085,10 @@ class MangaTranslator:
             print(f"[*] GPU هست ({name}, {vram:.1f} GB) ولی VRAM کم → OpenCV. "
                   f"برای اجبار: --lama یا --gpu")
             return False
+        if has_torch and not _on_android():
+            print("[*] دسکتاپ/وب → پاک‌سازی پیش‌فرض با big-lama.pt "
+                  "(روی CPU کندتر ولی تمیزتر). برای غیرفعال‌سازی: --cpu")
+            return True
 
         print("[*] GPU نیست → OpenCV سریع. برای LaMa روی CPU: --lama")
         return False
@@ -4226,6 +4252,13 @@ class MangaTranslator:
             ch, cw = y1 - y0, x1 - x0
             det_class = (getattr(region, "det_class", "") or "")
             ink = zone
+            if ink is not None and det_class not in ("bubble", "text_bubble"):
+                try:
+                    _gz = self._glyph_mask_in_zone(gray[y0:y1, x0:x1], ink)
+                    if _gz is not None:
+                        ink = _gz
+                except Exception:
+                    pass
             if getattr(self, "erase_bubble_interior", False) and zone is not None and det_class in ("bubble", "text_bubble"):
                 interior = self._bubble_interior_mask(gray[y0:y1, x0:x1], zone)
                 if interior is not None and interior.max() > 0:
@@ -4248,8 +4281,12 @@ class MangaTranslator:
                 if np.count_nonzero(ink) > 0.45 * ch * cw:
                     continue
             if _fill_poly is not None:
+                _ink_t = self._tilted_ink_mask(gray, x0, y0, x1, y1,
+                                               _fill_poly, _angs)
                 _fill = np.zeros((y1 - y0, x1 - x0), dtype=np.uint8)
                 cv2.fillPoly(_fill, [_fill_poly - np.array([x0, y0], dtype=np.int32)], 255)
+                if _ink_t is not None and int(np.count_nonzero(_ink_t)) >= 60:
+                    _fill = _ink_t
                 ink = cv2.bitwise_or(ink, _fill) if ink is not None else _fill
             if padding:
                 ink = cv2.dilate(ink, kernel)
@@ -4257,8 +4294,78 @@ class MangaTranslator:
 
         return text_mask
 
-    def _flat_fill_cluster(self, crop_img: np.ndarray, crop_msk: np.ndarray) -> Optional[np.ndarray]:
+    def _tilted_ink_mask(self, gray: np.ndarray, x0: int, y0: int, x1: int, y1: int,
+                         poly_abs: np.ndarray, ang: float) -> Optional[np.ndarray]:
+        try:
+            crop = gray[y0:y1, x0:x1]
+            ch, cw = crop.shape[:2]
+            if crop.size == 0 or ch < 8 or cw < 8:
+                return None
+            quad = np.rint(poly_abs).astype(np.int32) - np.array([x0, y0], dtype=np.int32)
+            solid = np.zeros((ch, cw), dtype=np.uint8)
+            cv2.fillPoly(solid, [quad], 255)
+            if int(np.count_nonzero(solid)) < 120:
+                return None
+            _c0 = quad.reshape(-1, 2).mean(axis=0)
+            M = cv2.getRotationMatrix2D((float(_c0[0]), float(_c0[1])), -float(ang), 1.0)
+            _cos, _sin = abs(M[0, 0]), abs(M[0, 1])
+            nw = int(ch * _sin + cw * _cos) + 2
+            nh = int(ch * _cos + cw * _sin) + 2
+            M[0, 2] += (nw / 2.0) - float(_c0[0])
+            M[1, 2] += (nh / 2.0) - float(_c0[1])
+            rot = cv2.warpAffine(crop, M, (nw, nh),
+                                 flags=cv2.INTER_NEAREST, borderValue=255)
+            rot_solid = cv2.warpAffine(solid, M, (nw, nh),
+                                       flags=cv2.INTER_NEAREST, borderValue=0)
+            vals = rot[rot_solid > 0]
+            if vals.size < 80:
+                return None
+            med = float(np.median(vals))
+            ink = ((rot < min(med - 35.0, 170.0)) & (rot_solid > 0)).astype(np.uint8) * 255
+            ink = self._drop_non_text_components(ink, nh, nw)
+            n_ink = int(np.count_nonzero(ink))
+            n_zone = int(np.count_nonzero(rot_solid > 0))
+            if n_ink < 60 or n_ink > 0.55 * n_zone:
+                return None
+            Minv = cv2.invertAffineTransform(M)
+            back = cv2.warpAffine(ink, Minv, (cw, ch),
+                                  flags=cv2.INTER_NEAREST, borderValue=0)
+            out = ((back > 0) & (solid > 0)).astype(np.uint8) * 255
+            if int(np.count_nonzero(out)) < 60:
+                return None
+            return out
+        except Exception:
+            return None
 
+    @staticmethod
+    def _glyph_mask_in_zone(crop_gray: np.ndarray,
+                            zone: np.ndarray) -> Optional[np.ndarray]:
+        try:
+            z = (zone > 0)
+            zc = int(z.sum())
+            if zc < 200:
+                return None
+            bg = cv2.medianBlur(crop_gray, 31)
+            diff = cv2.absdiff(crop_gray, bg)
+            g = ((diff > 26) & z).astype(np.uint8) * 255
+            g = cv2.morphologyEx(g, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+            n, lab, st, _ = cv2.connectedComponentsWithStats(
+                (g > 0).astype(np.uint8), 8)
+            if n > 1:
+                keep = np.zeros_like(g)
+                for i in range(1, n):
+                    if int(st[i, cv2.CC_STAT_AREA]) >= 20:
+                        keep[lab == i] = 255
+                if int(np.count_nonzero(keep)) >= 120:
+                    g = keep
+            cov = float(np.count_nonzero(g)) / float(zc)
+            if cov < 0.06 or cov > 0.92:
+                return None
+            return g
+        except Exception:
+            return None
+
+    def _flat_fill_cluster(self, crop_img: np.ndarray, crop_msk: np.ndarray) -> Optional[np.ndarray]:
         m = crop_msk > 0
         if not m.any():
             return None
@@ -4267,11 +4374,23 @@ class MangaTranslator:
         if int(np.count_nonzero(ring)) < 60:
             return None
         ring_px = crop_img[ring].astype(np.float32)
+
+        _W = np.array([0.114, 0.587, 0.299], dtype=np.float32)
+        _lum = ring_px @ _W
+        _paper = ring_px[_lum >= 200.0]
+        _paper_share = float(_paper.shape[0]) / float(max(1, ring_px.shape[0]))
+        if _paper_share >= 0.35:
+            _anchor = np.median(_paper, axis=0)
+            _sel = (np.abs(ring_px - _anchor[None, :]).max(axis=1) <= 20.0)
+            if int(_sel.sum()) < 60:
+                return None
+            ring_px = ring_px[_sel]
+            ring[ring] = _sel
         h, w = m.shape
         yy, xx = np.mgrid[-1:1:complex(h), -1:1:complex(w)]
         basis = np.stack((np.ones_like(xx), xx, yy, xx * yy, xx * xx, yy * yy), axis=-1)
         samples = basis[ring]
-        keep = np.ones(len(samples), dtype=bool)
+        keep = np.ones(int(samples.shape[0]), dtype=bool)
         for _ in range(4):
             fit = np.linalg.lstsq(samples[keep], ring_px[keep], rcond=None)[0]
             error = np.max(np.abs(samples @ fit - ring_px), axis=1)
@@ -4281,7 +4400,11 @@ class MangaTranslator:
         if float(np.percentile(error[keep], 90)) > 6.0:
             return None
         fill = basis[m] @ fit
-
+        if _paper_share >= 0.35:
+            _fill_lum = float(np.median(fill @ _W))
+            _anchor_lum = float(np.median(_paper @ _W))
+            if _fill_lum < 170.0 or _fill_lum < _anchor_lum - 25.0:
+                return None
         if np.any(fill < ring_px[keep].min(axis=0) - 8) or np.any(fill > ring_px[keep].max(axis=0) + 8):
             return None
         out = crop_img.copy()
@@ -4437,7 +4560,7 @@ class MangaTranslator:
                                     _g = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
                                     _bg_px = _g[_ring_m]
                                     _bright = _bg_px[_bg_px >= 160.0]
-                                    if _bright.size >= max(50, int(0.02 * _bg_px.size)):
+                                    if _bright.size >= max(50, int(0.02 * _bg_px.size)) and _bright.size >= 0.55 * _bg_px.size:
                                         _bg_med = float(np.median(_bright))
                                         _fill_med = float(np.median(_g[_fm]))
                                         if _fill_med < 115.0 and _fill_med < _bg_med - 55.0:
@@ -4488,7 +4611,7 @@ class MangaTranslator:
                                     _g = cv2.cvtColor(result, cv2.COLOR_BGR2GRAY)
                                     _bg_px = _g[_ring_m]
                                     _bright = _bg_px[_bg_px >= 160.0]
-                                    if _bright.size >= max(50, int(0.02 * _bg_px.size)):
+                                    if _bright.size >= max(50, int(0.02 * _bg_px.size)) and _bright.size >= 0.55 * _bg_px.size:
                                         _bg_med = float(np.median(_bright))
                                         _fill_med = float(np.median(_g[_fm]))
                                         if _fill_med < 115.0 and _fill_med < _bg_med - 55.0:
@@ -4515,7 +4638,8 @@ class MangaTranslator:
                         (crop_msk > 0).astype(np.uint8), cv2.DIST_L2, 3).max())
                 except Exception:
                     _thick0 = 0.0
-                _kd = int(np.clip(2 * int(round(max(4.0, _thick0 * 0.9))) + 1, 9, 41))
+
+                _kd = int(np.clip(2 * int(round(max(3.0, _thick0 * 0.55))) + 1, 7, 25))
                 _oc_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_kd, _kd))
                 _dil = cv2.morphologyEx(
                     cv2.dilate(crop_msk, _oc_k, iterations=1),
@@ -4593,9 +4717,72 @@ class MangaTranslator:
             if wall_m is not None:
                 wl = wall_m[y0:y1, x0:x1]
                 dm = (dm & raw_m) | (dm & ~wl)
-            fill = self._opencv_inpaint_hq(sub_img, dm.astype(np.uint8) * 255)
-            out[y0:y1, x0:x1][dm] = fill[dm]
+            if a > 9000:
+                try:
+                    if self._inpaint_big_component_banded(out, sub_img,
+                                                          raw_m, y0, x0):
+                        continue
+                except Exception:
+                    pass
+            _gm = None
+            try:
+                _g = self._glyph_refine_mask(sub_img, (raw_m.astype(np.uint8) * 255))
+                if _g is not None:
+                    _gm = (_g > 0)
+            except Exception:
+                _gm = None
+            if _gm is not None:
+                fill = self._opencv_inpaint_hq(sub_img, (_gm.astype(np.uint8) * 255))
+                out[y0:y1, x0:x1][_gm] = fill[_gm]
+            else:
+                fill = self._opencv_inpaint_hq(sub_img, dm.astype(np.uint8) * 255)
+                out[y0:y1, x0:x1][dm] = fill[dm]
         return out
+
+    def _inpaint_big_component_banded(self, out: np.ndarray, sub_img: np.ndarray,
+                                      raw_m: np.ndarray, y0: int, x0: int) -> bool:
+        try:
+            rh, rw = raw_m.shape
+            if rh < 24:
+                return False
+            rows = raw_m.sum(axis=1)
+            nz = rows > 0
+            bands = []
+            s = None
+            gap = 0
+            for r in range(rh):
+                if nz[r]:
+                    if s is None:
+                        s = r
+                    gap = 0
+                elif s is not None:
+                    gap += 1
+                    if gap >= 4:
+                        bands.append((s, r - gap + 1))
+                        s = None
+            if s is not None:
+                bands.append((s, rh))
+            bands = [(bs, be) for (bs, be) in bands if be - bs >= 4]
+            if len(bands) < 2:
+                return False
+            for (bs, be) in bands:
+                band_m = np.zeros_like(raw_m)
+                band_m[bs:be] = raw_m[bs:be]
+                gm = None
+                try:
+                    g = self._glyph_refine_mask(sub_img,
+                                                band_m.astype(np.uint8) * 255)
+                    if g is not None:
+                        gm = (g > 0)
+                except Exception:
+                    gm = None
+                target = gm if gm is not None else band_m
+                fill = self._opencv_inpaint_hq(sub_img,
+                                               target.astype(np.uint8) * 255)
+                out[y0:y0 + rh, x0:x0 + rw][target] = fill[target]
+            return True
+        except Exception:
+            return False
 
     @staticmethod
     def _bg_is_textured(crop_img: np.ndarray, crop_msk: np.ndarray,

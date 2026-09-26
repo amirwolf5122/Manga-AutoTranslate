@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 APP_NAME = "مانگا مترجم"
-APP_VER = "1.10"
+APP_VER = "1.12"
 HERE = os.path.dirname(os.path.abspath(__file__))
 MANGA_PY = os.path.join(HERE, "manga.py")
 WORK_DIR = os.path.join(HERE, "workspace")
@@ -1007,18 +1007,24 @@ def run_desktop():
     apibase_var = tk.StringVar(value=cfg.get("api_base", ""))
     ttk.Entry(row_ab, textvariable=apibase_var).pack(fill="x")
 
+    _keys_label = ttk.Label(card_ai, text="کلید API (چند کلید = با کاما، چرخش خودکار)",
+                            foreground=C_MUT)
+    _keys_label.pack(fill="x", pady=(6, 2))
+    keys_var = tk.StringVar(value=cfg.get("api_keys") or default_keys())
+    keys_entry = ttk.Entry(card_ai, textvariable=keys_var, show="•")
+    keys_entry.pack(fill="x")
+
     def _toggle_custom_fields(*_a):
         if str(prov_var.get()).strip() == "custom":
-            row_ab.pack(fill="x", pady=(6, 0))
+            try:
+                row_ab.pack(fill="x", pady=(6, 0), before=_keys_label)
+            except Exception:
+                row_ab.pack(fill="x", pady=(6, 0))
         else:
             row_ab.pack_forget()
 
     prov_var.trace_add("write", _toggle_custom_fields)
     _toggle_custom_fields()
-    field(card_ai, "کلید API (چند کلید = با کاما، چرخش خودکار)")
-    keys_var = tk.StringVar(value=cfg.get("api_keys") or default_keys())
-    keys_entry = ttk.Entry(card_ai, textvariable=keys_var, show="•")
-    keys_entry.pack(fill="x")
 
     OCR_LANG_CHOICES = [
         ("انگلیسی", "en"),
