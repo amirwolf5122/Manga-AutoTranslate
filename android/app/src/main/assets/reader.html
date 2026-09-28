@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=5,user-scalable=yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>__TITLE__</title>
+<style>*{box-sizing:border-box;margin:0;padding:0}html,body{height:100%;background:#000;color:#e8e6e1;font-family:system-ui,-apple-system,sans-serif;overscroll-behavior:none;-webkit-user-select:none;user-select:none}.rdr{position:fixed;inset:0;z-index:1;background:#000;display:flex;flex-direction:column;direction:ltr}.rdr-bar{display:flex;align-items:center;flex-wrap:wrap;gap:6px;padding:8px 10px;background:rgba(12,12,14,.96);border-bottom:1px solid #232326;flex:none;backdrop-filter:blur(8px);z-index:2}.rdr-btn{background:#161619;color:#e8e6e1;border:1px solid #2a2a2e;border-radius:8px;padding:8px 12px;font-size:.95rem;cursor:pointer;font-family:inherit;min-width:40px;min-height:40px;touch-action:manipulation;-webkit-tap-highlight-color:transparent}.rdr-btn:active{background:#2a2a30}.rdr-btn.fs{background:#ff4a3d;border-color:#ff4a3d;color:#fff;font-weight:700}.rdr-title{flex:1 1 120px;color:#97948c;font-size:.8rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right;direction:rtl;min-width:0}.rdrS{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;touch-action:pan-y;position:relative;background:#000}.rdrC{margin:0 auto;max-width:min(100%,900px);width:100%}.rdrC img{display:block;width:100%;height:auto;max-width:none;user-select:none;-webkit-user-drag:none;pointer-events:none}.rdr-progress{position:relative;height:3px;background:#1a1a1c;flex:none}.rdrB{height:100%;width:0;background:linear-gradient(90deg,#ff4a3d,#ff8a5e)}.zlv{color:#97948c;font-size:.8rem;min-width:44px;text-align:center;font-variant-numeric:tabular-nums}@media (max-width:480px){.rdr-bar{gap:4px;padding:6px 8px}.rdr-btn{padding:7px 10px;font-size:.9rem;min-width:36px}.rdr-title{font-size:.72rem;order:10;flex:1 1 100%;text-align:center}}</style>
+</head>
+<body>
+<div class="rdr" id="manga_rdr" data-zoom="1">
+  <div class="rdr-bar">
+    <button type="button" class="rdr-btn" data-act="close" title="بستن">✕</button>
+    <div class="rdr-title">__TITLE__</div>
+    <button type="button" class="rdr-btn" data-act="zoom-out" title="دور">−</button>
+    <span class="zlv">100%</span>
+    <button type="button" class="rdr-btn" data-act="zoom-in" title="نزدیک">+</button>
+    <button type="button" class="rdr-btn" data-act="zoom-fit" title="پهنای صفحه">پهنا</button>
+    <button type="button" class="rdr-btn fs" data-act="fs" title="فول‌اسکرین">⛶</button>
+  </div>
+  <div class="rdrS"><div class="rdrC">__IMGS__</div></div>
+  <div class="rdr-progress"><div class="rdrB"></div></div>
+</div>
+<script>
+
+(function(){
+  const root = document.getElementById('manga_rdr');
+  if (!root) return;
+  const sc = root.querySelector('.rdrS');
+  const c = root.querySelector('.rdrC');
+  const bar = root.querySelector('.zlv');
+  const prog = root.querySelector('.rdrB');
+  if (!sc || !c) return;
+  let z = 1;
+  const MIN = 0.5, MAX = 4;
+  const baseWidth = () => Math.max(200, Math.min(900, sc.clientWidth || window.innerWidth || 360));
+  const applyZoom = (nz, cx, cy) => {
+    nz = Math.min(MAX, Math.max(MIN, +nz || 1));
+    const rect = sc.getBoundingClientRect();
+    const sx = (typeof cx === 'number') ? cx : (rect.left + rect.width / 2);
+    const sy = (typeof cy === 'number') ? cy : (rect.top + rect.height / 2);
+    const relX = (sc.scrollLeft + (sx - rect.left)) / Math.max(0.01, z);
+    const relY = (sc.scrollTop + (sy - rect.top)) / Math.max(0.01, z);
+    z = nz;
+    c.style.maxWidth = 'none';
+    c.style.width = Math.round(baseWidth() * z) + 'px';
+    c.style.marginLeft = 'auto';
+    c.style.marginRight = 'auto';
+    sc.scrollLeft = relX * z - (sx - rect.left);
+    sc.scrollTop = relY * z - (sy - rect.top);
+    if (bar) bar.textContent = Math.round(z * 100) + '%';
+    root.dataset.zoom = String(z);
+  };
+  const setZoom = (nz) => applyZoom(nz);
+  const zoomBy = (f, cx, cy) => applyZoom(z * f, cx, cy);
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-act]');
+    if (!btn || !root.contains(btn)) return;
+    e.preventDefault();
+    const act = btn.getAttribute('data-act');
+    if (act === 'close') {
+      try {
+        const isFs = document.fullscreenElement || document.webkitFullscreenElement;
+        if (isFs) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      } catch (err) {}
+      try { window.close(); } catch (err) {}
+      try { if (history.length > 1) history.back(); } catch (err) {}
+      return;
+    }
+    if (act === 'zoom-in') zoomBy(1.25);
+    else if (act === 'zoom-out') zoomBy(0.8);
+    else if (act === 'zoom-fit') setZoom(1);
+    else if (act === 'fs') {
+      const isFs = document.fullscreenElement || document.webkitFullscreenElement
+                || document.mozFullScreenElement || document.msFullscreenElement;
+      if (isFs) {
+        (document.exitFullscreen || document.webkitExitFullscreen
+         || document.mozCancelFullScreen || document.msExitFullscreen).call(document);
+      } else {
+        const el = document.documentElement;
+        const req = el.requestFullscreen || el.webkitRequestFullscreen
+                 || el.mozRequestFullScreen || el.msRequestFullscreen;
+        if (req) {
+          try { req.call(el); } catch (err) {
+            try { req.call(root); } catch (err2) {}
+          }
+        }
+      }
+    }
+  });
+  sc.addEventListener('wheel', (e) => {
+    if (!e.ctrlKey && !e.metaKey) return;
+    e.preventDefault();
+    zoomBy(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY);
+  }, { passive: false });
+  sc.addEventListener('dblclick', (e) => {
+    e.preventDefault();
+    if (z > 1.3) setZoom(1);
+    else zoomBy(2.2, e.clientX, e.clientY);
+  });
+  let pinch = null, pan = null;
+  const dist = (a, b) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+  const mid = (a, b) => ({ x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 });
+  sc.addEventListener('touchstart', (e) => {
+    if (e.touches.length === 2) {
+      e.preventDefault();
+      pinch = { startDist: dist(e.touches[0], e.touches[1]), startZ: z };
+      pan = null;
+    } else if (e.touches.length === 1) {
+      pan = { x: e.touches[0].clientX, y: e.touches[0].clientY, sl: sc.scrollLeft, st: sc.scrollTop };
+    }
+  }, { passive: false });
+  sc.addEventListener('touchmove', (e) => {
+    if (pinch && e.touches.length === 2) {
+      e.preventDefault();
+      const d = dist(e.touches[0], e.touches[1]);
+      const m = mid(e.touches[0], e.touches[1]);
+      applyZoom(pinch.startZ * (d / Math.max(1, pinch.startDist)), m.x, m.y);
+    } else if (pan && e.touches.length === 1 && z > 1.05) {
+      e.preventDefault();
+      const t = e.touches[0];
+      sc.scrollLeft = pan.sl - (t.clientX - pan.x);
+      sc.scrollTop = pan.st - (t.clientY - pan.y);
+    }
+  }, { passive: false });
+  sc.addEventListener('touchend', (e) => {
+    if (e.touches.length < 2) pinch = null;
+    if (e.touches.length === 0) pan = null;
+  });
+  sc.addEventListener('touchcancel', () => { pinch = null; pan = null; });
+  sc.addEventListener('scroll', () => {
+    if (!prog) return;
+    const m = sc.scrollHeight - sc.clientHeight;
+    prog.style.width = (m > 0 ? (sc.scrollTop / m * 100) : 0) + '%';
+  }, { passive: true });
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      try {
+        const isFs = document.fullscreenElement || document.webkitFullscreenElement;
+        if (isFs) { (document.exitFullscreen || document.webkitExitFullscreen).call(document); return; }
+      } catch (err) {}
+      try { window.close(); } catch (err) {}
+    } else if (e.key === '+' || e.key === '=') zoomBy(1.15);
+    else if (e.key === '-' || e.key === '_') zoomBy(0.87);
+    else if (e.key === '0') setZoom(1);
+    else if (e.key === 'f' || e.key === 'F') {
+      const btn = root.querySelector('[data-act="fs"]');
+      if (btn) btn.click();
+    }
+  });
+  setZoom(1);
+})();
+
+</script>
+</body>
+</html>

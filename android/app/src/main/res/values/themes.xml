@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.Manga" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="android:windowBackground">#060607</item>
+        <item name="android:statusBarColor">#060607</item>
+        <item name="android:navigationBarColor">#060607</item>
+        <item name="colorPrimary">#ff4a3d</item>
+        <item name="colorPrimaryDark">#c9271c</item>
+        <item name="colorAccent">#ff4a3d</item>
+        <item name="android:colorBackground">#060607</item>
+    </style>
+</resources>
