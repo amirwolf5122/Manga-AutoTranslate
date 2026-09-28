@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 from __future__ import annotations
-APP_VER = "1.12.3"
+APP_VER = "1.12.4"
 
 DEFAULT_SYSTEM_INSTRUCTION_STYLE = """
 تو صدای دوبلهٔ فارسی مانگا، مانهوا و کمیک هستی.
@@ -4368,6 +4368,12 @@ class MangaTranslator:
                     extra = self._ink_mask_inside_bubble(gray, x0, y0, x1, y1)
                     extra = self._drop_non_text_components(extra, ch, cw)
                     extra = self._protect_bubble_wall(extra, gray[y0:y1, x0:x1])
+                    _domain = self._bubble_interior_mask(gray[y0:y1, x0:x1], zone)
+                    if _domain is not None and _domain.max() > 0:
+                        extra = cv2.bitwise_and(extra, _domain)
+                    else:
+                        _zn = cv2.dilate(zone, np.ones((9, 9), np.uint8), iterations=1)
+                        extra = cv2.bitwise_and(extra, _zn)
                     extra_area = int(np.count_nonzero(extra))
                     if 0 < extra_area <= 0.30 * ch * cw:
                         ink = cv2.bitwise_or(ink, extra)
@@ -4379,6 +4385,16 @@ class MangaTranslator:
                 ink = self._drop_non_text_components(ink, ch, cw)
                 ink = self._protect_bubble_wall(ink, gray[y0:y1, x0:x1])
                 if np.count_nonzero(ink) > 0.45 * ch * cw:
+                    try:
+                        _zfull = np.full((ch, cw), 255, dtype=np.uint8)
+                        _gz0 = self._glyph_mask_in_zone(gray[y0:y1, x0:x1], _zfull)
+                        if (_gz0 is not None
+                                and 60 <= int(np.count_nonzero(_gz0))
+                                <= 0.45 * ch * cw):
+                            ink = _gz0
+                    except Exception:
+                        pass
+                if np.count_nonzero(ink) > 0.45 * ch * cw:
                     continue
             if _fill_poly is not None:
                 _ink_t = self._tilted_ink_mask(gray, x0, y0, x1, y1,
@@ -4387,6 +4403,19 @@ class MangaTranslator:
                 cv2.fillPoly(_fill, [_fill_poly - np.array([x0, y0], dtype=np.int32)], 255)
                 if _ink_t is not None and int(np.count_nonzero(_ink_t)) >= 60:
                     _fill = _ink_t
+                else:
+                    try:
+                        _gz = self._glyph_mask_in_zone(gray[y0:y1, x0:x1], _fill)
+                        if _gz is not None and int(np.count_nonzero(_gz)) >= 60:
+                            _fill = _gz
+                        elif ink is not None and np.count_nonzero(ink):
+                            _tight = cv2.bitwise_and(
+                                _fill,
+                                cv2.dilate(ink, np.ones((7, 7), np.uint8), iterations=1))
+                            if int(np.count_nonzero(_tight)) >= 60:
+                                _fill = _tight
+                    except Exception:
+                        pass
                 ink = cv2.bitwise_or(ink, _fill) if ink is not None else _fill
             if padding:
                 ink = cv2.dilate(ink, kernel)
@@ -7520,8 +7549,6 @@ class MangaTranslator:
     def _verify_angle_signs(self, image: np.ndarray,
                             regions: List["TextRegion"]) -> None:
         for r in regions:
-            if str(getattr(r, "angle_src", "") or "") in ("engine", "poly"):
-                continue
             ang = float(getattr(r, "angle", 0.0) or 0.0)
             if abs(ang) < 6.0:
                 continue
@@ -9685,6 +9712,34 @@ html, body { background: #0a0a0b; }
                 _spread = float(np.max(np.abs(np.asarray(_angs) - _med)))
                 if _spread <= 4.0:
                     angle = _med
+        except Exception:
+            pass
+
+        try:
+            if abs(angle) >= 8.0 and original_image is not None:
+                _vpts = None
+                for _p in (getattr(region, "ocr_polys", None) or []):
+                    try:
+                        _pp = np.asarray(_p, dtype=np.float32).reshape(-1, 2)
+                    except Exception:
+                        continue
+                    if _pp.size == 0:
+                        continue
+                    _vpts = _pp if _vpts is None else np.concatenate([_vpts, _pp], axis=0)
+                if _vpts is None:
+                    _vpts = np.array([[x, y], [x + w, y],
+                                      [x + w, y + h], [x, y + h]], dtype=np.float32)
+                _vx0 = max(0, int(_vpts[:, 0].min()) - 2)
+                _vy0 = max(0, int(_vpts[:, 1].min()) - 2)
+                _vx1 = min(int(original_image.shape[1]), int(_vpts[:, 0].max()) + 3)
+                _vy1 = min(int(original_image.shape[0]), int(_vpts[:, 1].max()) + 3)
+                if _vx1 - _vx0 >= 40 and _vy1 - _vy0 >= 14:
+                    _a_ink = MangaTranslator._ink_slant_angle(
+                        original_image[_vy0:_vy1, _vx0:_vx1])
+                    if abs(_a_ink) >= 6.0 and (_a_ink > 0.0) != (angle > 0.0):
+                        print(f"    [!] اصلاح جهتِ چرخش در رندر [{region.id}]: "
+                              f"{angle:+.1f}° → {_a_ink:+.1f}°")
+                        angle = _a_ink
         except Exception:
             pass
 
