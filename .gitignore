@@ -1,0 +1,41 @@
+# runtime artifacts (downloaded at first run — never commit)
+det_models/
+rapidocr_models/
+workspace/
+paddle_models/
+*.pt
+*.onnx
+__pycache__/
+*.pyc
+nohup.out
+*.log
+__pycache__/
+out_residue/
+out_*/
+
+# v1.14.106 — کتابخانهٔ Paddle-Lite (دانلودی — با fetch_paddle.py)
+android/app/libs/PaddlePredictor.jar
+android/app/src/main/jniLibs/*/libpaddle_lite_jni.so
+
+# v1.14.184 — مدلهایِ رسمیِ PP-OCRv6_small (ppocr-android) زمانِ بیلدِ CI
+# دانلود و در assets باندل میشوند — در گیت نمیآیند
+android/app/src/main/assets/models/
+
+# v1.14.238 — دادهٔ کالیبراسیون/مدلهایِ آزمایشیِ کوانتیزاسیونِ int8
+# (۲۳۳MB ورودیِ ضبطشده + مدلهایِ ساخته‌شده — فقط اسکریپتها و نتیجه در گیت)
+scripts/quant_calib/
+
+# v1.14.251 — کشِ marshalِ لودرِ manga.py (بازتولیدِ خودکار — کامیت نشود)
+manga_sections/__pycache__/
+*.marshal
+
+# v1.14.251 — خروجیِ توزیعِ تک‌فایلی (تولید: scripts/build_manga.py --single)
+manga_single.py
+
+# v1.14.279 — کپیهایِ sync_sources (تولیدی — هر بار با android/scripts/sync_sources.py ساخته میشوند)
+android/app/src/main/python/manga.py
+android/app/src/main/python/manga_app.py
+
+# v1.14.292 — بخشهای موتور در زمانِ اجرا از میرورها میرسند (تستِ محلی آنها را اینجا ساخت)
+android/app/src/main/python/manga_sections/
+android/app/src/main/python/.manga_sections_refresh

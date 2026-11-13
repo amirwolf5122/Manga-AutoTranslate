@@ -1,0 +1,133 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      bundle_ocr_models:
+        description: "Bundle OCR models into APK (default: no — runtime download)"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "manga.py"
+      - "manga_sections/**"
+      - "manga_app.py"
+      - "VERSION"
+      - "android/**"
+      - ".github/workflows/build.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Python 3.10 (Chaquopy buildPython)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Fetch vendored Python packages
+        run: |
+          python3 android/scripts/fetch_vendor.py --check || \
+            python3 android/scripts/fetch_vendor.py
+
+      - name: Sync engine sources into APK
+        run: python3 android/scripts/sync_sources.py
+
+      - name: Fetch RapidOCR models (PP-OCRv6 — det small + rec MEDIUM)
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.bundle_ocr_models }}
+        run: |
+          base="https://www.modelscope.cn/models/RapidAI/RapidOCR/resolve/v3.9.2"
+          rel="https://github.com/amirwolf5122/Manga-AutoTranslate/releases/download/models"
+          A=android/app/src/main/assets/models
+          mkdir -p $A/det $A/cls $A/rec $A/rec_ko
+          curl -fL --retry 3 --max-time 600 -o $A/det/inference.onnx \
+            "$base/onnx/PP-OCRv6/det/PP-OCRv6_det_small.onnx"
+          curl -fL --retry 3 --max-time 900 -o $A/rec/inference.onnx \
+            "$rel/PP-OCRv6_medium_rec_onnx.onnx"
+          curl -fL --retry 3 --max-time 300 -o $A/rec/dict.txt \
+            "$rel/ppocrv6_chars.txt"
+          curl -fL --retry 3 --max-time 600 -o $A/cls/inference.onnx \
+            "$base/onnx/PP-OCRv4/cls/ch_ppocr_mobile_v2.0_cls_mobile.onnx"
+          curl -fL --retry 3 --max-time 600 -o $A/rec_ko/inference.onnx \
+            "$base/onnx/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile.onnx"
+          curl -fL --retry 3 --max-time 600 -o $A/rec_ko/dict.txt \
+            "$base/paddle/PP-OCRv5/rec/korean_PP-OCRv5_rec_mobile/ppocrv5_korean_dict.txt"
+          ls -la $A/det $A/cls $A/rec $A/rec_ko
+          test $(stat -c%s $A/det/inference.onnx) -gt 8000000
+          test $(stat -c%s $A/cls/inference.onnx) -gt 300000
+          test $(stat -c%s $A/rec/inference.onnx) -gt 60000000
+          test $(stat -c%s $A/rec/dict.txt) -gt 60000
+          test $(stat -c%s $A/rec_ko/inference.onnx) -gt 12000000
+
+      - name: Inject version from VERSION
+        run: |
+          VC=$(sed -n 's/^versionCode=//p' VERSION | tr -d '[:space:]')
+          VN=$(sed -n 's/^versionName=//p' VERSION | tr -d '[:space:]')
+          echo "versionCode=$VC versionName=$VN"
+          sed -i -E "s/versionCode = .*/versionCode = $VC/; s/versionName = .*/versionName = \"$VN\"/" \
+            android/app/build.gradle.kts
+          sed -n '12,18p' android/app/build.gradle.kts
+
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build arm64 APK
+        working-directory: android
+        run: |
+          gradle :app:assembleDebug -PappAbis="arm64-v8a" \
+            -PchaquopyBuildPython="$(command -v python3)"
+          mkdir -p ../dist
+          cp app/build/outputs/apk/debug/app-debug.apk ../dist/MangaTranslator-arm64.apk
+
+      - name: Build armv7a APK
+        working-directory: android
+        run: |
+          gradle :app:assembleDebug -PappAbis="armeabi-v7a" \
+            -PchaquopyBuildPython="$(command -v python3)"
+          cp app/build/outputs/apk/debug/app-debug.apk ../dist/MangaTranslator-armv7a.apk
+
+      - name: Build universal APK
+        working-directory: android
+        run: |
+          gradle :app:assembleDebug -PappAbis="arm64-v8a,armeabi-v7a" \
+            -PchaquopyBuildPython="$(command -v python3)"
+          cp app/build/outputs/apk/debug/app-debug.apk ../dist/MangaTranslator-universal.apk
+
+      - name: Show sizes
+        run: ls -la dist/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: MangaTranslator-APKs
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Attach to release `apk`
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: apk
+          name: apk
+          overwrite_files: true
+          files: |
+            dist/MangaTranslator-arm64.apk
+            dist/MangaTranslator-armv7a.apk
+            dist/MangaTranslator-universal.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
