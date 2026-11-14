@@ -1,0 +1,5 @@
+versionCode=308
+versionName=1.14.307
+apkArm64=https://github.com/amirwolf5122/Manga-AutoTranslate/releases/download/apk/MangaTranslator-arm64.apk
+apkArmv7a=https://github.com/amirwolf5122/Manga-AutoTranslate/releases/download/apk/MangaTranslator-armv7a.apk
+apkUniversal=https://github.com/amirwolf5122/Manga-AutoTranslate/releases/download/apk/MangaTranslator-universal.apk

@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <!-- v1.14.184 — SDKِ رسمیِ ppocr-android با minSdkِ 26 آمده؛
+         اپ با ۲۴ میماند (OpenCV/ORT رویِ API 24-25 هم اجرا میشوند؛
+         کدِ SDK از APIِ 26+ استفاده نمیکند) -->
+    <uses-sdk tools:overrideLibrary="com.paddle.ocr" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <!-- Wake Lock — بیدار ماندن CPU/صفحه برای استخراج متن و پاکسازی (مشکل ۴) -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <!-- آپدیت خودکار اپ (v1.14.15) -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- v1.14.150 — سرویسِ پیشزمینه: ادامهٔ ترجمه وقتی کاربر روی اپ دیگری است -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <application
+        android:name=".MtApp"
+        android:label="مانگا مترجم"
+        android:icon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.Manga"
+        android:hardwareAccelerated="true"
+        android:usesCleartextTraffic="true"
+        android:largeHeap="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- v1.14.150 — سرویسِ پیشزمینهٔ ترجمه (نوتیفیکیشنِ «در حال ترجمه») -->
+        <service
+            android:name=".TranslationService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <!-- v1.14.184 — سرویسِ EpProbeService (پروبِ EPِ ONNXِ موتورِ
+             قدیمیِ OCR) حذف شد: SDKِ رسمیِ ppocr-android رویِ CPU اجرا
+             میشود و هیچ شتابدهنده/پروبِ جداگانهای ندارد -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>
