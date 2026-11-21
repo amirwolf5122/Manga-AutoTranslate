@@ -1,0 +1,119 @@
+name: Manga Web (موقت)
+
+on:
+  workflow_dispatch:
+    inputs:
+      web_minutes:
+        description: "مدت باز بودن وب (دقیقه) — بعدش حتماً خاموش می‌شود"
+        required: false
+        default: "60"
+        type: string
+jobs:
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get install -y libgl1 libglib2.0-0 libsm6 libxext6 libxrender-dev
+
+      - name: Download fonts
+        run: |
+          set -e
+          mkdir -p fonts
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Bold.ttf" -o fonts/Vazirmatn-Bold.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/vazirmatn/master/fonts/ttf/Vazirmatn-Regular.ttf" -o fonts/Vazirmatn-Regular.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/shabnam-font/master/dist/Shabnam-Bold.ttf" -o fonts/Lalezar-Regular.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/gandom-font/master/dist/Gandom.ttf" -o fonts/Gandom.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/nahid-font/master/dist/Nahid.ttf" -o fonts/Nahid.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/sahel-font/master/dist/Sahel.ttf" -o fonts/Sahel.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/samim-font/master/dist/Samim-Bold.ttf" -o fonts/Samim-Bold.ttf
+          curl -fL "https://raw.githubusercontent.com/google/fonts/main/ofl/amiri/Amiri-Regular.ttf" -o fonts/Amiri-Regular.ttf
+          curl -fL "https://raw.githubusercontent.com/rastikerdar/shabnam-font/master/dist/Shabnam-Bold.ttf" -o fonts/Shabnam-Bold.ttf
+          ls -la fonts/
+
+
+      - name: Start Gradio web (auto shutdown)
+        env:
+          MANGA_APP_PORT: "7860"
+        run: |
+          set -e
+          MINS=$(echo "${{ inputs.web_minutes }}" | tr -cd '0-9')
+          if [ -z "$MINS" ] || [ "$MINS" -lt 5 ]; then MINS=30; fi
+          if [ "$MINS" -gt 300 ]; then MINS=300; fi
+          SECS=$((MINS * 60))
+
+          APP="manga_app.py"
+          if [ -f manga_app_fixed.py ]; then APP="manga_app_fixed.py"; fi
+          if [ ! -f "$APP" ]; then
+            echo "فایل $APP در ریشه ریپو پیدا نشد."
+            ls -la
+            exit 1
+          fi
+          if [ ! -f manga.py ]; then
+            echo "فایل manga.py در ریشه ریپو پیدا نشد."
+            exit 1
+          fi
+
+          {
+            echo "============================================================"
+            echo "  حالت WEB — موقت روی GitHub Actions"
+            echo "============================================================"
+            echo "  • لینک public (*.gradio.live) چند ثانیه بعد در همین لاگ می‌آید."
+            echo "  • حداکثر باز بودن: ${MINS} دقیقه"
+            echo "  • بعد از اتمام زمان / Cancel کردن workflow"
+            echo "    سرور حتماً خاموش می‌شود و لینک از کار می‌افتد."
+            echo "  • خروجی را قبل از خاموش شدن از UI دانلود کنید."
+            echo "============================================================"
+          } | tee web_run.log
+
+          set +e
+          timeout --signal=TERM --kill-after=45s "${SECS}s" \
+            python -u "$APP" --web >> web_run.log 2>&1 &
+          PID=$!
+
+          for i in $(seq 1 90); do
+            if grep -qoE 'https://[a-zA-Z0-9.-]+\.(gradio\.live|hf\.space)' web_run.log 2>/dev/null; then
+              echo ""
+              echo ">>> لینک وب:"
+              grep -oE 'https://[a-zA-Z0-9.-]+\.(gradio\.live|hf\.space)' web_run.log | tail -n 1
+              echo ""
+              break
+            fi
+            if ! kill -0 "$PID" 2>/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+
+          wait "$PID"
+          EXIT=$?
+          set -e
+
+          {
+            echo ""
+            echo "============================================================"
+            if [ "$EXIT" -eq 124 ] || [ "$EXIT" -eq 137 ]; then
+              echo "  ⏱ زمان وب تمام شد — سرور خاموش شد (اجباری)."
+            elif [ "$EXIT" -eq 0 ]; then
+              echo "  ✓ وب بسته شد."
+            else
+              echo "  وب با کد $EXIT تمام شد — سرور خاموش است."
+              echo "  --- انتهای لاگ ---"
+              tail -n 80 web_run.log || true
+            fi
+            echo "  لینک دیگر کار نمی‌کند."
+            echo "============================================================"
+          } | tee -a web_run.log
+
+          if [ "$EXIT" -ne 0 ] && [ "$EXIT" -ne 124 ] && [ "$EXIT" -ne 137 ]; then
+            exit "$EXIT"
+          fi
