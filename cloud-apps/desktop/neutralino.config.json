@@ -1,0 +1,49 @@
+{
+  "applicationId": "com.amirwolf.mangacloud",
+  "version": "1.0.0",
+  "defaultMode": "window",
+  "port": 0,
+  "documentRoot": "/resources/",
+  "url": "https://amirwolf512-manga-autotranslate.hf.space/",
+  "enableServer": true,
+  "enableNativeAPI": false,
+  "tokenSecurity": "one-time",
+  "logging": {
+    "enabled": false,
+    "writeToLogFile": false
+  },
+  "nativeAllowList": [],
+  "modes": {
+    "window": {
+      "title": "مانگا کلود — مترجم مانگا",
+      "width": 1280,
+      "height": 820,
+      "minWidth": 480,
+      "minHeight": 420,
+      "center": true,
+      "fullScreen": false,
+      "alwaysOnTop": false,
+      "icon": "/resources/icons/appIcon.png",
+      "enableInspector": false,
+      "borderless": false,
+      "maximize": true,
+      "hidden": false,
+      "resizable": true,
+      "exitProcessOnClose": true
+    },
+    "browser": {
+      "globalVariables": []
+    },
+    "cloud": {
+      "globalVariables": []
+    }
+  },
+  "cli": {
+    "binaryName": "MangaCloud",
+    "resourcesPath": "/resources/",
+    "extensionsPath": "/extensions/",
+    "clientLibrary": "/resources/neutralino.js",
+    "binaryVersion": "6.10.0",
+    "clientVersion": "6.10.0"
+  }
+}
