@@ -1,0 +1,281 @@
+name: Build Cloud Apps
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - "cloud-apps/**"
+      - "keys/**"
+      - ".github/workflows/cloud-apps.yml"
+      - "VERSION"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Gradle 8.10.2
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.10.2"
+
+      - name: Build Android cloud APK (release — universal)
+        working-directory: cloud-apps/android
+        run: |
+          VC=$(sed -n 's/^versionCode=//p' "$GITHUB_WORKSPACE/VERSION" | tr -d '[:space:]')
+          VN=$(sed -n 's/^versionName=//p' "$GITHUB_WORKSPACE/VERSION" | tr -d '[:space:]')
+          echo "cloudVersionCode=$VC cloudVersionName=$VN"
+          gradle :app:assembleRelease \
+            -PcloudVersionCode="$VC" -PcloudVersionName="$VN"
+          mkdir -p "$GITHUB_WORKSPACE/dist"
+          cp app/build/outputs/apk/release/app-release.apk \
+            "$GITHUB_WORKSPACE/dist/MangaCloud-Android-universal.apk"
+
+      - name: Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Build desktop shells (Neutralino — linux x64/arm64/armhf)
+        working-directory: cloud-apps/desktop
+        run: |
+          npm install --no-fund --no-audit @neutralinojs/neu@11.8.0
+          npx neu update
+          npx neu build --release
+          ls -la dist/MangaCloud
+          D=dist/MangaCloud
+          mkdir -p pkg/linux-x64 pkg/linux-arm64 pkg/linux-armhf
+          cp "$D/MangaCloud-linux_x64" "$D/resources.neu" pkg/linux-x64/
+          cp "$D/MangaCloud-linux_arm64" "$D/resources.neu" pkg/linux-arm64/
+          cp "$D/MangaCloud-linux_armhf" "$D/resources.neu" pkg/linux-armhf/
+          (cd pkg/linux-x64 && tar -czf "$GITHUB_WORKSPACE/dist/MangaCloud-Linux-x64.tar.gz" .)
+          (cd pkg/linux-arm64 && tar -czf "$GITHUB_WORKSPACE/dist/MangaCloud-Linux-arm64.tar.gz" .)
+          (cd pkg/linux-armhf && tar -czf "$GITHUB_WORKSPACE/dist/MangaCloud-Linux-armhf.tar.gz" .)
+
+      - name: Show sizes
+        run: ls -la dist/
+
+      - name: Publish to clouds release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NOTES='مانگا کلود — نسخه سبک ابری (همه پردازش روی سرور)
+
+          - Android (universal — release امضاشده): arm / arm64 / x86 / x86_64
+          - Linux x64 / arm64 / armhf (32bit ARM)
+          - Windows x64 + x86 32bit (فایلِ جدا در همین ریلیز)
+
+          فقط صفحه https://amirwolf512-manga-autotranslate.hf.space/ را باز می‌کند؛ بدون مدل و بدون وابستگی.'
+          NOTES=$(printf '%s' "$NOTES" | sed 's/^          //')
+          if gh release view clouds --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release upload clouds dist/MangaCloud-Android-universal.apk dist/MangaCloud-Linux-* \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create clouds dist/MangaCloud-Android-universal.apk dist/MangaCloud-Linux-* \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "clouds" --target main --notes "$NOTES"
+          fi
+
+      - name: Upload clouds to amirwolf5122 (اکشنزِ 5122 بن است)
+        env:
+          GH_TOKEN: ${{ secrets.PAT_5122 }}
+        run: |
+          set -e
+          if gh release view apks --repo amirwolf5122/Manga-AutoTranslate > /dev/null 2>&1; then
+            gh release view clouds --repo amirwolf5122/Manga-AutoTranslate > /dev/null 2>&1 && \
+              gh release upload clouds dist/MangaCloud-Android-universal.apk dist/MangaCloud-Linux-* \
+                --repo amirwolf5122/Manga-AutoTranslate --clobber || \
+              gh release create clouds dist/MangaCloud-Android-universal.apk dist/MangaCloud-Linux-* \
+                --repo amirwolf5122/Manga-AutoTranslate \
+                --title "clouds" --target main \
+                --notes "مانگا کلود — نسخه سبک ابری (همه پردازش روی سرور)"
+          else
+            echo "ریلیز apks هنوز در 5122 نیست — clouds هم رد شد (بعداً با APK میآید)"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-apps-linux
+          path: dist/
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: WebView2 SDK 1.0.2903.40
+        shell: pwsh
+        run: |
+          curl.exe -sL -o wv2.nupkg "https://www.nuget.org/api/v2/package/Microsoft.Web.WebView2/1.0.2903.40"
+          Expand-Archive wv2.nupkg -DestinationPath wv2sdk
+          if (-not (Test-Path wv2sdk/build/native/include/WebView2.h)) { throw "WebView2.h missing" }
+          if (-not (Test-Path wv2sdk/build/native/x64/WebView2LoaderStatic.lib)) { throw "x64 static lib missing" }
+          if (-not (Test-Path wv2sdk/build/native/x86/WebView2LoaderStatic.lib)) { throw "x86 static lib missing" }
+
+      - name: Build x64 (MSVC)
+        shell: cmd
+        working-directory: cloud-apps/desktop/win32
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x64
+          where cl || exit /b 1
+          del /q MangaCloud.exe 2>nul
+          rc /nologo /fo app64.res app.rc || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Zi /MT /W3 /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE /I"%GITHUB_WORKSPACE%\wv2sdk\build\native\include" app.cpp app64.res /Fe:MangaCloud.exe /Fo:app64.obj /link /SUBSYSTEM:WINDOWS /MANIFEST:NO /DEBUG /LIBPATH:"%GITHUB_WORKSPACE%\wv2sdk\build\native\x64" WebView2LoaderStatic.lib user32.lib gdi32.lib ole32.lib shell32.lib advapi32.lib uuid.lib
+          if not exist MangaCloud.exe exit /b 1
+          mkdir pkg64 2>nul
+          copy /y MangaCloud.exe pkg64\ >nul
+          dir pkg64
+
+      - name: Smoke test x64 — run 25s, expect alive, no CRASH
+        shell: pwsh
+        working-directory: cloud-apps/desktop/win32
+        run: |
+          $env:MANGA_SMOKE = "1"
+          $exe = Join-Path (Get-Location) "MangaCloud.exe"
+          if (-not (Test-Path $exe)) { throw "MangaCloud.exe missing" }
+          $p = Start-Process -FilePath $exe -PassThru -WorkingDirectory (Get-Location)
+          Start-Sleep -Seconds 25
+          $alive = -not $p.HasExited
+          $log = Join-Path (Get-Location) "run.log"
+          if (Test-Path $log) {
+            echo "=== run.log ==="
+            Get-Content $log
+            if (Select-String -Path $log -Pattern "CRASH" -Quiet) {
+              echo "!! CRASH detected in run.log"
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              exit 1
+            }
+          } else {
+            echo "no run.log produced"
+          }
+          if (-not $alive) {
+            echo "!! APP EXITED EARLY with code $($p.ExitCode)"
+            exit 1
+          }
+          echo "APP ALIVE after 25s — smoke OK"
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Stop-Process -Name "msedgewebview2" -Force -ErrorAction SilentlyContinue
+          Remove-Item $log -ErrorAction SilentlyContinue
+          Get-ChildItem -Filter "*.dmp" | Remove-Item -ErrorAction SilentlyContinue
+
+      - name: Smoke test x64 phase 2 — internal browser (regression for v1.14.330)
+        shell: pwsh
+        working-directory: cloud-apps/desktop/win32
+        run: |
+          $env:MANGA_SMOKE = "2"
+          $exe = Join-Path (Get-Location) "MangaCloud.exe"
+          if (-not (Test-Path $exe)) { throw "MangaCloud.exe missing" }
+          $p = Start-Process -FilePath $exe -PassThru -WorkingDirectory (Get-Location)
+          Start-Sleep -Seconds 50
+          $alive = -not $p.HasExited
+          $log = Join-Path (Get-Location) "run.log"
+          if (Test-Path $log) {
+            echo "=== run.log (phase 2 — internal browser) ==="
+            Get-Content $log
+            if (Select-String -Path $log -Pattern "CRASH" -Quiet) {
+              echo "!! CRASH detected in run.log (internal browser path)"
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              exit 1
+            }
+            if (-not (Select-String -Path $log -Pattern "br webview created" -Quiet)) {
+              echo "!! browser webview was never created — lazy controller path broken"
+              Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+              exit 1
+            }
+          } else {
+            echo "no run.log produced"
+            exit 1
+          }
+          if (-not $alive) {
+            echo "!! APP EXITED EARLY with code $($p.ExitCode)"
+            exit 1
+          }
+          echo "APP ALIVE with internal browser open — smoke phase 2 OK"
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 2
+          Stop-Process -Name "msedgewebview2" -Force -ErrorAction SilentlyContinue
+          Remove-Item $log -ErrorAction SilentlyContinue
+          Get-ChildItem -Filter "*.dmp" | Remove-Item -ErrorAction SilentlyContinue
+
+      - name: Build x86 32bit (MSVC)
+        shell: cmd
+        working-directory: cloud-apps/desktop/win32
+        run: |
+          set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+          for /f "usebackq delims=" %%i in (`"%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSPATH=%%i"
+          call "%VSPATH%\VC\Auxiliary\Build\vcvarsall.bat" x86
+          where cl || exit /b 1
+          del /q MangaCloud.exe 2>nul
+          rc /nologo /fo app86.res app.rc || exit /b 1
+          cl /nologo /std:c++17 /EHsc /O2 /Zi /MT /W3 /D_CRT_SECURE_NO_WARNINGS /DUNICODE /D_UNICODE /I"%GITHUB_WORKSPACE%\wv2sdk\build\native\include" app.cpp app86.res /Fe:MangaCloud.exe /Fo:app86.obj /link /SUBSYSTEM:WINDOWS /MANIFEST:NO /DEBUG /LIBPATH:"%GITHUB_WORKSPACE%\wv2sdk\build\native\x86" WebView2LoaderStatic.lib user32.lib gdi32.lib ole32.lib shell32.lib advapi32.lib uuid.lib
+          if not exist MangaCloud.exe exit /b 1
+          mkdir pkg86 2>nul
+          copy /y MangaCloud.exe pkg86\ >nul
+          dir pkg86
+
+      - name: Zip Windows packages
+        shell: pwsh
+        working-directory: cloud-apps/desktop/win32
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:GITHUB_WORKSPACE\dist" | Out-Null
+          Compress-Archive -Path pkg64\* -DestinationPath "$env:GITHUB_WORKSPACE\dist\MangaCloud-Windows-x64.zip" -Force
+          Compress-Archive -Path pkg86\* -DestinationPath "$env:GITHUB_WORKSPACE\dist\MangaCloud-Windows-x86.zip" -Force
+          Get-ChildItem "$env:GITHUB_WORKSPACE\dist"
+
+      - name: Publish to clouds release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload clouds dist/MangaCloud-Windows-* --repo $env:GITHUB_REPOSITORY --clobber 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create clouds dist/MangaCloud-Windows-* --repo $env:GITHUB_REPOSITORY --title "clouds" --target main --notes "Windows x64 + x86" 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              Start-Sleep -Seconds 5
+              gh release upload clouds dist/MangaCloud-Windows-* --repo $env:GITHUB_REPOSITORY --clobber
+            }
+          }
+
+      - name: Upload clouds (win) to amirwolf5122
+        env:
+          GH_TOKEN: ${{ secrets.PAT_5122 }}
+        run: |
+          gh release view apks --repo amirwolf5122/Manga-AutoTranslate *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload clouds dist/MangaCloud-Windows-* --repo amirwolf5122/Manga-AutoTranslate --clobber 2>$null
+            if ($LASTEXITCODE -ne 0) {
+              gh release create clouds dist/MangaCloud-Windows-* --repo amirwolf5122/Manga-AutoTranslate --title "clouds" --target main --notes "Windows" 2>$null
+              if ($LASTEXITCODE -ne 0) {
+                Start-Sleep -Seconds 5
+                gh release upload clouds dist/MangaCloud-Windows-* --repo amirwolf5122/Manga-AutoTranslate --clobber
+              }
+            }
+          } else {
+            echo "apks release not ready on 5122 yet - skipping win upload (will retry next run)"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cloud-apps-windows
+          path: dist/
+          if-no-files-found: error

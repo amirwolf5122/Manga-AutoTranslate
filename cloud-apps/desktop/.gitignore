@@ -1,0 +1,9 @@
+node_modules/
+dist/
+bin/
+resources/neutralino.js
+resources/neutralino.d.ts
+win32/*.o
+win32/*.res
+win32/*.exe
+win32/pkg*/

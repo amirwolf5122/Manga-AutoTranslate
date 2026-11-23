@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Manga AutoExtract</title>
+<style>
+*{box-sizing:border-box;font-family:Tahoma,"Segoe UI",system-ui,sans-serif}
+body{width:340px;margin:0;background:#0f0f15;color:#e8e8ec;padding:16px}
+.hdr{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-bottom:12px;border-bottom:1px solid #23232e}
+.hdr h1{font-size:16px;color:#fff;margin:0 0 3px}
+.hdr p{font-size:11.5px;color:#9a9aa5;margin:0}
+.sw{position:relative;display:flex;align-items:center;gap:7px;cursor:pointer;flex:0 0 auto;user-select:none;-webkit-user-select:none}
+.sw input{position:absolute;opacity:0;width:0;height:0}
+.sw .track{width:46px;height:26px;border-radius:13px;background:#2a2a35;border:1px solid #3a3a48;transition:background .18s,border-color .18s;position:relative;flex:0 0 auto}
+.sw .track::after{content:"";position:absolute;top:2px;right:2px;width:20px;height:20px;border-radius:50%;background:#8a8a93;transition:transform .18s,background .18s}
+.sw input:checked + .track{background:#dc2626;border-color:#ef4444}
+.sw input:checked + .track::after{transform:translateX(-20px);background:#fff}
+.sw .txt{font-size:13px;font-weight:bold;color:#9a9aa5;min-width:34px;text-align:center}
+.sw input:checked ~ .txt{color:#f87171}
+.status{margin-top:10px;font-size:12.5px;color:#fbbf24;min-height:18px;font-weight:bold}
+ol{margin:12px 0 0;padding-right:18px;font-size:13px;line-height:2;color:#d4d4dc}
+.sec{margin-top:14px;border-top:1px solid #23232e;padding-top:12px}
+.sec h2{font-size:13px;color:#fbbf24;margin:0 0 6px}
+.sec p{margin:0;font-size:12px;line-height:1.8}
+code{font-family:Consolas,monospace;direction:ltr;display:inline-block;background:#0a0a0f;border:1px solid #23232e;border-radius:4px;padding:1px 6px;font-size:11px;color:#fbbf24}
+.ver{margin-top:14px;text-align:center;font-size:11px;color:#6a6a75}
+</style>
+</head>
+<body>
+<div class="hdr">
+<div>
+<h1>Manga AutoExtract</h1>
+<p>استخراج عکس مانگا و مانها از هر سایت</p>
+</div>
+<label class="sw" aria-label="کلید ضبط">
+<input type="checkbox" id="tog" aria-label="ضبط روشن یا خاموش">
+<span class="track"></span>
+<span class="txt" id="togtxt">خاموش</span>
+</label>
+</div>
+<div class="status" id="status"></div>
+<ol>
+<li>کلید بالا را روشن کن — دکمهٔ «ضبط» پایین صفحه ظاهر می‌شود (ضبط هنوز شروع نشده)</li>
+<li>دکمهٔ «ضبط» را بزن — صفحه بازخوانی می‌شود و ضبط شروع می‌شود؛ دکمه به «استخراج» تغییر می‌کند</li>
+<li>فصل را تا آخر اسکرول کن تا همهٔ عکس‌ها لود شوند</li>
+<li>دکمهٔ «استخراج» را بزن، عکس‌های دلخواه را تیک بزن و لینک یا دانلود ZIP را انتخاب کن</li>
+<li>«متوقف ضبط» فقط ضبط را متوقف می‌کند — افزونه روشن می‌ماند و دکمهٔ «ضبط» برمی‌گردد</li>
+</ol>
+<div class="sec">
+<h2>محل ذخیره</h2>
+<p>ویندوز و لینوکس: <code>Download/MangaAuto</code> داخل پوشهٔ دانلود مرورگر</p>
+<p>اندروید: <code>/storage/emulated/0/Download/</code></p>
+</div>
+<div class="sec">
+<h2>نکته</h2>
+<p>عکس‌ها به ترتیب نمایش در HTML شماره می‌خورند: 1.jpg، 2.jpg و...</p>
+<p>فایل‌ها داخل یک فایل ZIP جمع می‌شوند و مسیرش نمایش داده می‌شود.</p>
+</div>
+<div class="ver" id="ver"></div>
+<script src="popup.js"></script>
+</body>
+</html>

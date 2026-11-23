@@ -1,0 +1,47 @@
+{
+  "manifest_version": 3,
+  "name": "Manga AutoExtract",
+  "version": "1.1.7",
+  "description": "استخراج عکس مانگا و مانها از هر سایت — لینک‌ها روی صفحه + دانلود ZIP",
+  "minimum_chrome_version": "103",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_title": "Manga AutoExtract",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "permissions": ["webRequest", "storage", "downloads", "scripting", "declarativeNetRequest"],
+  "host_permissions": ["<all_urls>"],
+  "content_scripts": [
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["http://*/*", "https://*/*"],
+      "js": ["zip.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-hook.js"],
+      "matches": ["http://*/*", "https://*/*"]
+    }
+  ]
+}
